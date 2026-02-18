@@ -6,7 +6,7 @@ import { resolve } from "path";
 
 import { Wallet } from "../src/wallet/Wallet.js";
 import { KeyStore } from "../src/wallet/KeyStore.js";
-import { Transaction, TX_TYPE } from "../src/core/Transaction.js";
+import { Transaction, TX_TYPE } from "../src/core/transaction.js";
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 const ask = (q) => new Promise((res) => rl.question(q, res));

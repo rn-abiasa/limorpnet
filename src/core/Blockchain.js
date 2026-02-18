@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import { Block, createGenesisBlock } from "./Block.js";
-import { Transaction } from "./Transaction.js";
+import { Transaction } from "./transaction.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("Blockchain");

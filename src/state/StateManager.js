@@ -1,5 +1,5 @@
 import { sha256, serialize } from "../utils/crypto.js";
-import { TX_TYPE } from "../core/Transaction.js";
+import { TX_TYPE } from "../core/transaction.js";
 import { createLogger } from "../utils/logger.js";
 import { calculateBlockReward, splitFee } from "../utils/rewards.js";
 

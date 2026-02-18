@@ -1,4 +1,4 @@
-import { Transaction } from "./Transaction.js";
+import { Transaction } from "./transaction.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("Mempool");
