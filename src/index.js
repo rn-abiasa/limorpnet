@@ -4,7 +4,7 @@ import { StateManager } from "./state/StateManager.js";
 import { ContractVM } from "./vm/ContractVM.js";
 import { Blockchain } from "./core/Blockchain.js";
 import { Mempool } from "./core/Mempool.js";
-import { PoS } from "./consensus/PoS.js";
+import { PoS } from "./consensus/pos.js";
 import { BlockProducer } from "./consensus/BlockProducer.js";
 import { P2PServer } from "./network/P2PServer.js";
 import { RpcServer } from "./api/RpcServer.js";
