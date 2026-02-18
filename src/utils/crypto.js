@@ -21,24 +21,22 @@ export function publicKeyToAddress(publicKeyHex) {
 }
 
 /**
- * Serialize data deterministically for hashing/signing (sorts keys)
+ * Serialize data deterministically for hashing/signing (recursively sorts keys)
  */
 export function serialize(obj) {
-  if (obj === null || typeof obj !== "object") {
-    return typeof obj === "bigint" ? obj.toString() : JSON.stringify(obj);
-  }
+  const replacer = (_, v) => (typeof v === "bigint" ? v.toString() : v);
 
-  if (Array.isArray(obj)) {
-    return "[" + obj.map((item) => serialize(item)).join(",") + "]";
-  }
+  const sortObject = (input) => {
+    if (input === null || typeof input !== "object") return input;
+    if (Array.isArray(input)) return input.map(sortObject);
 
-  const sortedKeys = Object.keys(obj).sort();
-  const result = {};
-  for (const key of sortedKeys) {
-    result[key] = obj[key];
-  }
+    return Object.keys(input)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = sortObject(input[key]);
+        return acc;
+      }, {});
+  };
 
-  return JSON.stringify(result, (_, v) =>
-    typeof v === "bigint" ? v.toString() : v,
-  );
+  return JSON.stringify(sortObject(obj), replacer);
 }
