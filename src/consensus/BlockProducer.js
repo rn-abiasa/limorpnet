@@ -1,6 +1,7 @@
 import { Block } from "../core/block.js";
 import { MSG } from "../network/P2PServer.js";
 import { createLogger } from "../utils/logger.js";
+import { PoS } from "./pos.js";
 
 const logger = createLogger("BlockProducer");
 
@@ -9,7 +10,7 @@ export class BlockProducer {
    * @param {object} params
    * @param {import('../core/Blockchain.js').Blockchain} params.blockchain
    * @param {import('../core/Mempool.js').Mempool} params.mempool
-   * @param {import('../consensus/PoS.js').PoS} params.pos
+   * @param {import('../consensus/pos.js').PoS} params.pos
    * @param {import('../network/P2PServer.js').P2PServer} params.p2p
    * @param {import('../state/StateManager.js').StateManager} params.stateManager
    * @param {import('../wallet/Wallet.js').Wallet} params.wallet - validator wallet
@@ -53,12 +54,22 @@ export class BlockProducer {
       const latest = this.blockchain.getLatestBlock();
       const validators = await this.stateManager.getValidators();
 
-      // Check if we are the selected validator
-      const selected = this.pos.selectValidator(validators, latest.hash);
+      // Calculate current slot based on time elapsed since last block
+      const elapsed = Date.now() - latest.timestamp;
+      const slot = Math.floor(elapsed / this.pos.blockTime);
+
+      if (slot < 1) {
+        this._schedule();
+        return;
+      }
+
+      // Check if we are the selected validator for this slot
+      const selected = this.pos.selectValidator(validators, latest.hash, slot);
       const ourAddress = this.wallet.address.toLowerCase();
 
       if (!selected || selected.toLowerCase() !== ourAddress) {
-        logger.debug("Not our turn to produce", {
+        logger.debug("Waiting for slot leadership", {
+          currentSlot: slot,
           slotLeader: selected,
           us: ourAddress,
           height: latest.index + 1,

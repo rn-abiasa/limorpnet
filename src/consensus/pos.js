@@ -1,4 +1,5 @@
 import { createLogger } from "../utils/logger.js";
+import { sha256 } from "../utils/crypto.js";
 
 const logger = createLogger("PoS");
 
@@ -17,17 +18,19 @@ export class PoS {
    * Select validator using weighted random (stake-proportional)
    * @param {Array<{address: string, stake: bigint}>} validators
    * @param {string} seed - deterministic seed (e.g. previous block hash)
+   * @param {number} slot - the time slot index since previous block
    * @returns {string|null} selected validator address
    */
-  selectValidator(validators, seed) {
+  selectValidator(validators, seed, slot = 0) {
     const eligible = validators.filter((v) => v.stake >= this.minStake);
     if (eligible.length === 0) return null;
 
     const totalStake = eligible.reduce((sum, v) => sum + v.stake, 0n);
     if (totalStake === 0n) return null;
 
-    // Deterministic random from seed
-    const seedNum = BigInt("0x" + seed.slice(0, 16));
+    // Use both previous hash AND slot for deterministic rotation
+    const slotSeed = `${seed}-${slot}`;
+    const seedNum = BigInt("0x" + sha256(slotSeed).slice(0, 16));
     let target = seedNum % totalStake;
 
     for (const validator of eligible) {
@@ -49,8 +52,27 @@ export class PoS {
    * @returns {boolean}
    */
   isValidValidator(address, block, previousBlock, validators) {
-    const expected = this.selectValidator(validators, previousBlock.hash);
-    return expected === address;
+    // Calculate which slot this block's timestamp falls into
+    const elapsed = block.timestamp - previousBlock.timestamp;
+    const slot = Math.floor(elapsed / this.blockTime);
+
+    if (slot < 1) {
+      logger.warn("Block timestamp too close to previous block", { slot });
+      return false;
+    }
+
+    const expected = this.selectValidator(validators, previousBlock.hash, slot);
+    const result = expected && expected.toLowerCase() === address.toLowerCase();
+
+    if (!result) {
+      logger.warn("Invalid validator for slot", {
+        slot,
+        expected,
+        received: address,
+      });
+    }
+
+    return result;
   }
 
   /**
