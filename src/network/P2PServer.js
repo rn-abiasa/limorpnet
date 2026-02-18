@@ -1,8 +1,11 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { createLogger } from "../utils/logger.js";
 import { MessageHandler } from "./MessageHandler.js";
+import { Bonjour } from "bonjour-service";
+import os from "os";
 
 const logger = createLogger("P2PServer");
+const bonjour = new Bonjour();
 
 export const MSG = {
   NEW_BLOCK: "NEW_BLOCK",
@@ -28,6 +31,19 @@ export class P2PServer {
     this.peers = new Map(); // url -> WebSocket
     this.wss = null;
     this.handler = new MessageHandler({ blockchain, mempool, p2p: this });
+    this.localIp = this._getLocalIp();
+  }
+
+  _getLocalIp() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === "IPv4" && !iface.internal) {
+          return iface.address;
+        }
+      }
+    }
+    return "127.0.0.1";
   }
 
   start() {
@@ -40,7 +56,30 @@ export class P2PServer {
       this._sendChainRequest(ws);
     });
 
-    logger.info("P2P server started", { port: this.port });
+    logger.info("P2P server started", { port: this.port, ip: this.localIp });
+    this._startDiscovery();
+  }
+
+  _startDiscovery() {
+    // 1. Publish ourselves
+    bonjour.publish({
+      name: `Limorp-${this.port}-${Math.random().toString(36).slice(2, 7)}`,
+      type: "limorp",
+      port: this.port,
+      txt: { chainId: this.blockchain.genesis.chainId },
+    });
+
+    // 2. Browse for others
+    const browser = bonjour.find({ type: "limorp" });
+    browser.on("up", (service) => {
+      const url = `ws://${service.referer.address}:${service.port}`;
+      if (url !== `ws://${this.localIp}:${this.port}` && !this.peers.has(url)) {
+        logger.info("LAN peer discovered via mDNS", { url });
+        this.connectToPeer(url);
+      }
+    });
+
+    logger.info("LAN Discovery (mDNS) active");
   }
 
   /**
@@ -56,8 +95,10 @@ export class P2PServer {
       this.peers.set(url, ws);
       this._initSocket(ws, url);
       this._sendChainRequest(ws);
-      // Announce ourselves to the peer
-      this._send(ws, MSG.NEW_PEER, { url: `ws://localhost:${this.port}` });
+      // Announce ourselves to the peer using real LAN IP
+      this._send(ws, MSG.NEW_PEER, {
+        url: `ws://${this.localIp}:${this.port}`,
+      });
     });
 
     ws.on("error", (err) => {
