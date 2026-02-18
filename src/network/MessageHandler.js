@@ -37,11 +37,15 @@ export class MessageHandler {
         break;
 
       case MSG.PING:
-        this.p2p._send(ws, MSG.PONG, {});
+        this.p2p._send(ws, MSG.PONG, {
+          height: this.blockchain.getHeight(),
+          hash: this.blockchain.getLatestBlock().hash,
+        });
+        this._checkGossip(data, ws);
         break;
 
       case MSG.PONG:
-        // Heartbeat acknowledged
+        this._checkGossip(data, ws);
         break;
 
       default:
@@ -153,6 +157,34 @@ export class MessageHandler {
     if (url && !this.p2p.peers.has(url)) {
       logger.info("Discovered new peer", { url });
       this.p2p.connectToPeer(url);
+    }
+  }
+
+  _checkGossip(data, ws) {
+    if (!data || typeof data.height !== "number") return;
+
+    const localBlock = this.blockchain.getLatestBlock();
+    const localHeight = localBlock.index;
+
+    // 1. Peer is strictly ahead
+    if (data.height > localHeight) {
+      logger.info("Gossip: Peer is ahead. Triggering catch-up.", {
+        local: localHeight,
+        peer: data.height,
+      });
+      this.p2p._requestBlocks(ws, localHeight + 1, 100);
+      return;
+    }
+
+    // 2. Peer is at the same height but has a different hash (Fork detected)
+    if (data.height === localHeight && data.hash !== localBlock.hash) {
+      logger.info("Gossip: Fork detected at same height. Resolving.", {
+        height: localHeight,
+        localHash: localBlock.hash.slice(0, 8),
+        peerHash: data.hash.slice(0, 8),
+      });
+      // Request a small window back to find common ancestor
+      this.p2p._requestBlocks(ws, Math.max(0, localHeight - 10), 50);
     }
   }
 }

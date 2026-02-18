@@ -152,9 +152,26 @@ export class Blockchain extends EventEmitter {
       }
     }
 
-    // Only proceed if the incoming chain is actually better/longer (simple height rule for now)
-    const newHeight = incomingBlocks[incomingBlocks.length - 1].index;
-    if (newHeight <= latest.index) return false;
+    // Only proceed if the incoming chain is actually better/longer
+    const incomingLastBlock = incomingBlocks[incomingBlocks.length - 1];
+    const newHeight = incomingLastBlock.index;
+
+    if (newHeight < latest.index) return false;
+
+    if (newHeight === latest.index) {
+      // Tie-breaker: Deterministic rule (smaller hash wins)
+      // This ensures all nodes eventually converge on the same branch
+      if (incomingLastBlock.hash >= latest.hash) {
+        return false;
+      }
+      logger.info(
+        "Switching to a fork of the same height (deterministic tie-break)",
+        {
+          local: latest.hash.slice(0, 8),
+          incoming: incomingLastBlock.hash.slice(0, 8),
+        },
+      );
+    }
 
     this.isSyncing = true;
     try {

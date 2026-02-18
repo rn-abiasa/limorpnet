@@ -133,7 +133,10 @@ export class P2PServer {
     // Heartbeat
     ws._pingInterval = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
-        this._send(ws, MSG.PING, {});
+        this._send(ws, MSG.PING, {
+          height: this.blockchain.getHeight(),
+          hash: this.blockchain.getLatestBlock().hash,
+        });
       }
     }, 30_000);
 
