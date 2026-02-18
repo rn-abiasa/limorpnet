@@ -68,16 +68,16 @@ export class BlockProducer {
       const ourAddress = this.wallet.address.toLowerCase();
 
       if (!selected || selected.toLowerCase() !== ourAddress) {
-        logger.debug("Waiting for slot leadership", {
-          currentSlot: slot,
-          slotLeader: selected,
-          us: ourAddress,
-          height: latest.index + 1,
+        logger.info("Slot waiting: Not our turn", {
+          slot,
+          leader: selected?.slice(0, 10),
+          us: ourAddress.slice(0, 10),
         });
         this._schedule();
         return;
       }
 
+      logger.info("Leadership slot detected! Producing block...", { slot });
       await this._produceBlock(latest);
     } catch (err) {
       logger.error("Block production error", { error: err.message });

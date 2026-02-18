@@ -59,6 +59,7 @@ async function main() {
 
   if (keyPath && password) {
     try {
+      logger.info("Attempting to load validator key...", { path: keyPath });
       const wallet = KeyStore.load(keyPath, password);
       const producer = new BlockProducer({
         blockchain,
@@ -69,14 +70,16 @@ async function main() {
         wallet,
       });
       producer.start();
-      logger.info("Validator mode active", { address: wallet.address });
+      logger.info("✅ Validator mode ACTIVE", { address: wallet.address });
     } catch (err) {
-      logger.warn("Could not load validator key, running in observer mode", {
+      logger.error("❌ Failed to start Validator: Key error", {
         error: err.message,
       });
+      logger.info("Running in observer mode");
     }
   } else {
-    logger.info("Running in observer mode (no validator key configured)");
+    logger.info("Validator config missing (VALIDATOR_KEY_PATH/PASSWORD).");
+    logger.info("ℹ️  Running in observer mode");
   }
 
   // ── Graceful Shutdown ─────────────────────────────────────────────────────
