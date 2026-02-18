@@ -22,25 +22,37 @@ export class PoS {
    * @returns {string|null} selected validator address
    */
   selectValidator(validators, seed, slot = 0) {
-    const eligible = validators.filter((v) => v.stake >= this.minStake);
+    const eligible = validators
+      .filter((v) => v.stake >= this.minStake)
+      .sort((a, b) => a.address.localeCompare(b.address)); // Deterministic order
+
     if (eligible.length === 0) return null;
 
     const totalStake = eligible.reduce((sum, v) => sum + v.stake, 0n);
     if (totalStake === 0n) return null;
 
-    // Use the full hash as a BigInt to ensure it's larger than any possible total stake
-    const slotSeed = `${seed}-${slot}`;
-    const hashHex = sha256(slotSeed);
-    let target = BigInt("0x" + hashHex) % totalStake;
+    // Use a fixed seed for the primary winner of this block height
+    // This makes the rotation predictable across nodes
+    const baseTarget = BigInt("0x" + sha256(seed)) % totalStake;
 
-    for (const validator of eligible) {
-      if (target < validator.stake) {
-        return validator.address;
+    // Find the primary weighted-random winner index
+    let current = 0n;
+    let primaryWinnerIdx = 0;
+    for (let i = 0; i < eligible.length; i++) {
+      current += eligible[i].stake;
+      if (baseTarget < current) {
+        primaryWinnerIdx = i;
+        break;
       }
-      target -= validator.stake;
     }
 
-    return eligible[eligible.length - 1].address;
+    // Forced Round Robin Fallback:
+    // If slot=0, we use the primary winner.
+    // If slot > 0, we shift the winner index by the slot number.
+    // This guarantees that within 'eligible.length' slots, EVERY validator gets a turn.
+    const finalWinnerIdx = (primaryWinnerIdx + slot) % eligible.length;
+
+    return eligible[finalWinnerIdx].address;
   }
 
   /**

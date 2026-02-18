@@ -366,7 +366,7 @@ export class StateManager extends EventEmitter {
     for await (const { key, value } of this.db.iterate("state:account:")) {
       const acc = JSON.parse(value);
       if (BigInt(acc.stake || "0") > 0n) {
-        const address = key.replace("state:account:", "");
+        const address = key.replace("state:account:", "").toLowerCase();
         validators.push({ address, stake: BigInt(acc.stake) });
       }
     }

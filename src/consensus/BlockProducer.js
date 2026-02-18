@@ -74,11 +74,23 @@ export class BlockProducer {
       const ourAddress = this.wallet.address.toLowerCase();
 
       if (!selected || selected.toLowerCase() !== ourAddress) {
+        const totalStake = validators.reduce((s, v) => s + v.stake, 0n);
         logger.info("Slot waiting: Not our turn", {
           slot,
           leader: selected?.slice(0, 10),
           us: ourAddress.slice(0, 10),
+          eligibleCount: validators.length,
+          totalStake: totalStake.toString(),
         });
+
+        // Failover safety: If we've missed many slots, maybe we are stuck or on a fork
+        if (slot > 20 && slot % 10 === 0) {
+          logger.warn("High slot count detected, forcing network resync", {
+            slot,
+          });
+          this.p2p.requestSync(latest.index + 1);
+        }
+
         this._schedule();
         return;
       }
