@@ -5,26 +5,51 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatLMR(
+export function formatPrecision(
   amount: string | number | bigint,
-  decimals: number = 2,
+  decimals: number = 18,
 ): string {
   if (!amount) return "0";
-
   try {
-    const val = BigInt(amount);
-    const divisor = 1_000_000_000_000_000_000n; // 18 decimals
+    const valStr = amount.toString();
+    const isNegative = valStr.startsWith("-");
+    const absoluteVal = isNegative ? valStr.slice(1) : valStr;
 
-    // Convert to number for easy display (precision loss is acceptable for display)
-    const formatted = Number(val) / Number(divisor);
+    // Ensure we have enough length for decimals
+    const padded = absoluteVal.padStart(decimals + 1, "0");
+    const wholePart = padded.slice(0, padded.length - decimals);
+    const fractionalPart = padded.slice(padded.length - decimals);
 
-    return formatted.toLocaleString(undefined, {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: decimals,
-    });
+    // Trim trailing zeros from fractional part
+    const trimmedFractional = fractionalPart.replace(/0+$/, "");
+
+    let result = isNegative ? "-" : "";
+    result += wholePart;
+
+    if (trimmedFractional.length > 0) {
+      result += "." + trimmedFractional;
+    }
+
+    return result;
   } catch (e) {
     return "0";
   }
+}
+
+export function formatLMR(
+  amount: string | number | bigint,
+  displayDecimals: number = 4,
+): string {
+  const full = formatPrecision(amount, 18);
+  if (full === "0") return "0";
+
+  const [whole, fractional] = full.split(".");
+  if (!fractional) return whole;
+
+  const limitedFractional = fractional.slice(0, displayDecimals);
+  if (!limitedFractional) return whole;
+
+  return `${whole}.${limitedFractional}`;
 }
 
 export function truncateAddress(address: string, length: number = 6): string {

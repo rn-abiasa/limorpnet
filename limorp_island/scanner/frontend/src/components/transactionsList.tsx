@@ -49,7 +49,7 @@ const TransactionsList = ({ transactions = [] }: { transactions: any[] }) => {
                     <FileText className="w-4 h-4 text-slate-400 hidden sm:block" />
                     <a
                       href={`/tx/${tx.hash}`}
-                      className="text-blue-500 hover:underline font-medium truncate"
+                      className="text-blue-500 w-40 hover:underline font-medium truncate"
                     >
                       {tx.hash}
                     </a>
@@ -74,7 +74,7 @@ const TransactionsList = ({ transactions = [] }: { transactions: any[] }) => {
                 <td className="px-4 py-4">
                   <a
                     href={`/address/${tx.from}`}
-                    className="text-blue-500 hover:underline font-mono text-xs"
+                    className="text-blue-500 w-40 truncate hover:underline font-mono text-xs"
                   >
                     {tx.from}
                   </a>
@@ -84,7 +84,7 @@ const TransactionsList = ({ transactions = [] }: { transactions: any[] }) => {
                     <ArrowRight className="w-3 h-3 text-muted-foreground" />
                     <a
                       href={`/address/${tx.to}`}
-                      className="text-blue-500 hover:underline font-mono text-xs"
+                      className="text-blue-500 w-40 truncate hover:underline font-mono text-xs"
                     >
                       {tx.to}
                     </a>

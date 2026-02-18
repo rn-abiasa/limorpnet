@@ -1,4 +1,5 @@
 import { createServer } from "http";
+import { WebSocketServer } from "ws";
 import { createLogger } from "../utils/logger.js";
 import { Transaction, TX_TYPE } from "../core/transaction.js";
 import { calculateBlockReward } from "../utils/rewards.js";
@@ -19,6 +20,53 @@ export class RpcServer {
     this.p2p = p2p;
     this.port = port;
     this.server = null;
+    this.wss = null;
+
+    // ws -> Map<subscriptionId, { type, params }>
+    this.subscriptions = new Map();
+
+    this._setupEventListeners();
+  }
+
+  _setupEventListeners() {
+    this.blockchain.on("block:new", (block) => {
+      this._broadcastToSubscribers("newHeads", block.toJSON());
+    });
+
+    this.mempool.on("tx:new", (tx) => {
+      this._broadcastToSubscribers("newPendingTransactions", tx.hash);
+    });
+
+    this.blockchain.stateManager.on("event:new", (event) => {
+      this._broadcastToSubscribers("logs", event);
+    });
+  }
+
+  _broadcastToSubscribers(type, data) {
+    for (const [ws, subs] of this.subscriptions) {
+      for (const [id, sub] of subs) {
+        if (sub.type === type) {
+          // Additional filtering for logs (standard eth_subscribe pattern)
+          if (type === "logs" && sub.params?.address) {
+            if (
+              data.contract.toLowerCase() !== sub.params.address.toLowerCase()
+            )
+              continue;
+          }
+
+          ws.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              method: "lmr_subscription",
+              params: {
+                subscription: id,
+                result: data,
+              },
+            }),
+          );
+        }
+      }
+    }
   }
 
   start() {
@@ -61,13 +109,46 @@ export class RpcServer {
       });
     });
 
+    // Initialize WebSocket server
+    this.wss = new WebSocketServer({ server: this.server });
+    this.wss.on("connection", (ws) => {
+      this.subscriptions.set(ws, new Map());
+
+      ws.on("message", async (message) => {
+        try {
+          const rpc = JSON.parse(message);
+          const result = await this._dispatch(rpc, ws);
+          ws.send(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
+        } catch (err) {
+          ws.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: null,
+              error: { code: -32600, message: err.message },
+            }),
+          );
+        }
+      });
+
+      ws.on("close", () => {
+        this.subscriptions.delete(ws);
+      });
+    });
+
     this.server.listen(this.port, () => {
       logger.info("RPC server started", { port: this.port });
     });
   }
 
-  async _dispatch({ method, params = [] }) {
+  async _dispatch({ method, params = [] }, ws = null) {
     switch (method) {
+      case "lmr_subscribe":
+        if (!ws) throw new Error("Subscription only available via WebSocket");
+        return this._subscribe(ws, params);
+
+      case "lmr_unsubscribe":
+        if (!ws) throw new Error("Subscription only available via WebSocket");
+        return this._unsubscribe(ws, params);
       case "getBalance":
         return this._getBalance(params[0]);
 
@@ -118,9 +199,26 @@ export class RpcServer {
       case "getNodeInfo":
         return this._getNodeInfo();
 
+      case "getEvents":
+        return this._getEvents(params[0]);
+
       default:
         throw new Error(`Unknown method: ${method}`);
     }
+  }
+
+  _subscribe(ws, [type, params]) {
+    const id = "0x" + Math.random().toString(16).slice(2);
+    const subs = this.subscriptions.get(ws);
+    subs.set(id, { type, params });
+    logger.debug("New subscription", { id, type });
+    return id;
+  }
+
+  _unsubscribe(ws, [id]) {
+    const subs = this.subscriptions.get(ws);
+    const deleted = subs.delete(id);
+    return deleted;
   }
 
   async _getBalance(address) {
@@ -267,5 +365,29 @@ export class RpcServer {
       if (i % 500 === 0) await new Promise((resolve) => setImmediate(resolve));
     }
     return history;
+  }
+
+  async _getEvents(query = {}) {
+    const { address, txHash, blockIndex } =
+      typeof query === "string" ? { address: query } : query;
+    const events = [];
+
+    // Efficiency: If txHash is provided, we use it as prefix
+    const prefix = txHash ? `state:event:${txHash}` : `state:event:`;
+
+    for await (const { value } of this.blockchain.stateManager.db.iterate(
+      prefix,
+    )) {
+      const data = JSON.parse(value);
+      if (address && data.contract.toLowerCase() !== address.toLowerCase())
+        continue;
+      if (
+        blockIndex !== undefined &&
+        Number(data.blockIndex) !== Number(blockIndex)
+      )
+        continue;
+      events.push(data);
+    }
+    return events;
   }
 }

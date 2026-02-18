@@ -29,10 +29,10 @@ const LatestTransactions = ({ transactions = [] }: { transactions: any[] }) => {
               <div className="hidden sm:flex p-2 rounded-lg bg-slate-500/10 text-slate-600">
                 <FileText className="w-5 h-5" />
               </div>
-              <div className="max-w-[100px] sm:max-w-none">
+              <div className="max-w-25 sm:max-w-none">
                 <a
                   href={`/tx/${tx.hash}`}
-                  className="font-medium text-blue-500 hover:underline block truncate"
+                  className="text-sm font-medium text-blue-500 max-w-20 hover:underline block truncate"
                 >
                   {tx.hash}
                 </a>
@@ -47,7 +47,7 @@ const LatestTransactions = ({ transactions = [] }: { transactions: any[] }) => {
               <span className="text-slate-500">From</span>
               <a
                 href={`/address/${tx.from}`}
-                className="font-medium text-blue-500 max-w-[80px] truncate"
+                className="font-medium text-blue-500 max-w-20 truncate"
               >
                 {tx.from}
               </a>

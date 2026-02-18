@@ -112,6 +112,9 @@ export class BlockProducer {
     const result = await this.blockchain.addBlock(block);
     if (!result.ok) {
       logger.warn("Failed to add produced block", { error: result.error });
+      if (result.error.includes("Chain link mismatch")) {
+        this.p2p.requestSync(this.blockchain.getHeight() + 1);
+      }
       return;
     }
 

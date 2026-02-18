@@ -61,8 +61,20 @@ export class ContractVM {
         transfers.push({ to, amount: BigInt(amount) });
       },
 
-      // Emit event (logged, not stored)
+      // Call another contract
+      async call(address, method, args = [], value = 0n) {
+        if (!ctx.call)
+          throw new Error("Cross-contract calls not supported in this context");
+        const res = await ctx.call(address, method, args, BigInt(value));
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+      },
+
+      // Emit event
       emit(event, data) {
+        if (ctx.events) {
+          ctx.events.push({ event, data });
+        }
         logger.debug("Contract event", { event, data, contract: ctx.address });
       },
 
@@ -70,6 +82,7 @@ export class ContractVM {
       BigInt,
       JSON,
       Math,
+      sha256,
       parseInt,
       parseFloat,
       String,

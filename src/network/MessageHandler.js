@@ -24,12 +24,12 @@ export class MessageHandler {
         await this._handleNewTx(data, ws);
         break;
 
-      case MSG.REQUEST_CHAIN:
-        this._handleChainRequest(ws);
+      case MSG.REQUEST_BLOCKS:
+        this._handleBlocksRequest(ws, data);
         break;
 
-      case MSG.RESPONSE_CHAIN:
-        await this._handleChainResponse(data);
+      case MSG.RESPONSE_BLOCKS:
+        await this._handleBlocksResponse(data, ws);
         break;
 
       case MSG.NEW_PEER:
@@ -75,8 +75,8 @@ export class MessageHandler {
         this.p2p.broadcast(MSG.NEW_BLOCK, data, ws);
       } else {
         logger.warn("Block rejected from peer", { error: result.error });
-        // Might need chain sync
-        this.p2p._sendChainRequest(ws);
+        // Might need chain sync - request a small chunk from current height
+        this.p2p._requestBlocks(ws, Math.max(0, data.index - 10), 50);
       }
     } catch (err) {
       logger.warn("Error handling new block", { error: err.message });
@@ -107,22 +107,44 @@ export class MessageHandler {
     }
   }
 
-  _handleChainRequest(ws) {
-    const chain = this.blockchain.toJSON();
-    this.p2p._send(ws, MSG.RESPONSE_CHAIN, chain);
+  _handleBlocksRequest(ws, { fromIndex, count }) {
+    const chainLength = this.blockchain.chain.length;
+    const end = Math.min(fromIndex + count, chainLength);
+    const blocks = [];
+
+    for (let i = fromIndex; i < end; i++) {
+      blocks.push(this.blockchain.chain[i].toJSON());
+    }
+
+    this.p2p._send(ws, MSG.RESPONSE_BLOCKS, {
+      fromIndex,
+      blocks,
+      totalHeight: chainLength - 1,
+    });
   }
 
-  async _handleChainResponse(chainData) {
+  async _handleBlocksResponse({ fromIndex, blocks, totalHeight }, ws) {
     try {
-      const incomingChain = chainData.map((b) => Block.fromJSON(b));
-      const replaced = await this.blockchain.resolveConflict(incomingChain);
+      const incomingBlocks = blocks.map((b) => Block.fromJSON(b));
+
+      // Resolve conflict / add blocks
+      const replaced = await this.blockchain.resolveConflict(incomingBlocks);
+
       if (replaced) {
-        logger.info("Chain replaced via sync", {
-          newHeight: incomingChain.length - 1,
+        logger.info("Blocks synced successfully", {
+          from: fromIndex,
+          to: fromIndex + blocks.length - 1,
+          totalTip: totalHeight,
         });
+
+        // If we haven't reached the tip, request next chunk
+        const nextIdx = fromIndex + blocks.length;
+        if (nextIdx <= totalHeight) {
+          this.p2p._requestBlocks(ws, nextIdx, 100);
+        }
       }
     } catch (err) {
-      logger.warn("Error handling chain response", { error: err.message });
+      logger.warn("Error handling blocks response", { error: err.message });
     }
   }
 

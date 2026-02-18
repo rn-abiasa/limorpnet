@@ -83,13 +83,10 @@ const AddressDetail = () => {
             <div className="bg-white border rounded-xl p-4 shadow-sm flex items-center gap-6">
               <div>
                 <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider mb-1">
-                  Total Balance
+                  Native Coin Balance
                 </p>
                 <p className="text-xl font-bold text-slate-900">
-                  {formatLMR(
-                    BigInt(account?.balance || 0) + BigInt(account?.stake || 0),
-                  )}{" "}
-                  LMR
+                  {formatLMR(BigInt(account?.balance || 0))} LMR
                 </p>
               </div>
               <div className="w-px h-8 bg-slate-100 hidden sm:block"></div>
@@ -245,7 +242,7 @@ const AddressDetail = () => {
                 <h2 className="font-semibold">Token Balances</h2>
               </div>
               <div className="p-4">
-                <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                <div className="flex items-center justify-between p-3 bg-blue-50/50 border border-blue-100 rounded-lg mb-4">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold">
                       LMR
@@ -255,7 +252,7 @@ const AddressDetail = () => {
                         Limorp Native
                       </p>
                       <p className="text-[10px] text-muted-foreground">
-                        Protocol Token
+                        Protocol Coin
                       </p>
                     </div>
                   </div>
@@ -263,9 +260,54 @@ const AddressDetail = () => {
                     {formatLMR(account?.balance || 0)} LMR
                   </p>
                 </div>
-                <p className="text-center text-xs text-muted-foreground mt-4 italic">
-                  No other tokens found in this address.
-                </p>
+
+                {/* Dynamic Token List from Events */}
+                {data.events?.length > 0 ? (
+                  <div className="space-y-3">
+                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider mb-2">
+                      Contract Assets (LSP-20)
+                    </p>
+                    {/* Unique tokens based on contract address */}
+                    {Array.from(
+                      new Set(data.events.map((e: any) => e.contract)),
+                    ).map((contractAddr: any) => {
+                      const tokenEvents = data.events.filter(
+                        (e: any) => e.contract === contractAddr,
+                      );
+                      // This is a simplified balance check for demonstration
+                      return (
+                        <div
+                          key={contractAddr}
+                          className="flex items-center justify-between p-3 bg-slate-50 border rounded-lg"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 text-[10px] font-bold italic">
+                              TOK
+                            </div>
+                            <div>
+                              <p className="font-bold text-sm text-slate-900">
+                                Token at {contractAddr.slice(0, 8)}...
+                              </p>
+                              <p className="text-[10px] text-muted-foreground">
+                                {tokenEvents.length} Recent Activity
+                              </p>
+                            </div>
+                          </div>
+                          <Link
+                            to={`/address/${contractAddr}`}
+                            className="text-xs text-blue-500 hover:underline"
+                          >
+                            View Contract
+                          </Link>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-center text-xs text-muted-foreground mt-4 italic">
+                    No other tokens found in this address.
+                  </p>
+                )}
               </div>
             </div>
 

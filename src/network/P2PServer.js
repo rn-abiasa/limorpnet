@@ -10,8 +10,8 @@ const bonjour = new Bonjour();
 export const MSG = {
   NEW_BLOCK: "NEW_BLOCK",
   NEW_TX: "NEW_TX",
-  REQUEST_CHAIN: "REQUEST_CHAIN",
-  RESPONSE_CHAIN: "RESPONSE_CHAIN",
+  REQUEST_BLOCKS: "REQUEST_BLOCKS",
+  RESPONSE_BLOCKS: "RESPONSE_BLOCKS",
   NEW_PEER: "NEW_PEER",
   PING: "PING",
   PONG: "PONG",
@@ -53,7 +53,7 @@ export class P2PServer {
       const ip = req.socket.remoteAddress;
       logger.info("Peer connected", { ip });
       this._initSocket(ws);
-      this._sendChainRequest(ws);
+      this._requestBlocks(ws, 0, 100);
     });
 
     logger.info("P2P server started", { port: this.port, ip: this.localIp });
@@ -94,7 +94,7 @@ export class P2PServer {
       logger.info("Connected to peer", { url });
       this.peers.set(url, ws);
       this._initSocket(ws, url);
-      this._sendChainRequest(ws);
+      this._requestBlocks(ws, 0, 100);
       // Announce ourselves to the peer using real LAN IP
       this._send(ws, MSG.NEW_PEER, {
         url: `ws://${this.localIp}:${this.port}`,
@@ -169,8 +169,13 @@ export class P2PServer {
     }
   }
 
-  _sendChainRequest(ws) {
-    this._send(ws, MSG.REQUEST_CHAIN, {});
+  requestSync(fromIndex) {
+    logger.info("Triggering network sync request", { fromIndex });
+    this.broadcast(MSG.REQUEST_BLOCKS, { fromIndex, count: 100 });
+  }
+
+  _requestBlocks(ws, fromIndex, count = 100) {
+    this._send(ws, MSG.REQUEST_BLOCKS, { fromIndex, count });
   }
 
   /**

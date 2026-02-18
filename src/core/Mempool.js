@@ -1,10 +1,12 @@
+import { EventEmitter } from "events";
 import { Transaction } from "./transaction.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("Mempool");
 
-export class Mempool {
+export class Mempool extends EventEmitter {
   constructor({ maxSize = 5000 } = {}) {
+    super();
     this.maxSize = maxSize;
     /** @type {Map<string, Transaction>} */
     this.pending = new Map();
@@ -51,6 +53,7 @@ export class Mempool {
     }
 
     this.pending.set(tx.hash, tx);
+    this.emit("tx:new", tx);
     logger.info("Transaction added", {
       hash: tx.hash,
       from: tx.from,

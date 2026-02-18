@@ -3,7 +3,11 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import axios from "axios";
 import cors from "cors";
+import path from "path";
+import WebSocket from "ws";
 import "dotenv/config";
+
+import { Indexer } from "./indexer.js";
 
 const app = express();
 app.use(cors());
@@ -17,7 +21,9 @@ const io = new Server(httpServer, {
 });
 
 const RPC_URL = process.env.RPC_URL || "http://localhost:3000";
+const WS_RPC_URL = RPC_URL.replace("http", "ws");
 const PORT = process.env.PORT || 4000;
+const DATA_DIR = path.join(process.cwd(), "data_indexer");
 
 // Helper to call RPC
 const callRpc = async (method, params = []) => {
@@ -35,33 +41,41 @@ const callRpc = async (method, params = []) => {
   }
 };
 
+const indexer = new Indexer(DATA_DIR, callRpc);
+await indexer.open();
+
+// Separate background sync loop
+const startIndexer = async () => {
+  while (true) {
+    try {
+      await indexer.sync();
+    } catch (e) {
+      console.error("[Indexer] Loop error:", e.message);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+};
+startIndexer();
+
 let cachedPayload = null;
-let isPolling = false;
 
-// Polling for real-time updates
-const pollBlockchainData = async () => {
-  if (isPolling) return;
-  isPolling = true;
-
+// Function to broadcast dashboard updates
+const updateDashboard = async () => {
   try {
     const nodeInfo = await callRpc("getNodeInfo");
-    if (!nodeInfo) {
-      isPolling = false;
-      return;
-    }
+    if (!nodeInfo) return;
 
     const height = nodeInfo.height;
     const start = Math.max(0, height - 9);
 
-    // Fetch individual blocks in parallel
     const blockPromises = [];
     for (let i = height; i >= start; i--) {
       blockPromises.push(callRpc("getBlock", [i]));
     }
 
     const blocks = (await Promise.all(blockPromises)).filter(Boolean);
+    blocks.sort((a, b) => b.index - a.index);
 
-    // Extract latest transactions from latest blocks
     const txs = [];
     for (const b of blocks.slice(0, 5)) {
       if (b.transactions) {
@@ -88,15 +102,65 @@ const pollBlockchainData = async () => {
     };
 
     io.emit("dashboard-update", cachedPayload);
+    console.log(`[Backend] Dashboard Pushed: height=${height}`);
   } catch (error) {
-    console.error("Polling Error:", error.message);
-  } finally {
-    isPolling = false;
+    console.error("[Backend] Update error:", error.message);
   }
 };
 
-// Start polling every 3 seconds
-setInterval(pollBlockchainData, 3000);
+// WebSocket connection to Node for Real-Time Push
+const connectToNodeWS = () => {
+  const ws = new WebSocket(WS_RPC_URL);
+
+  ws.on("open", () => {
+    console.log("[WS] Connected to Node RPC");
+    // Subscribe to new blocks
+    ws.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "lmr_subscribe",
+        params: ["newHeads"],
+      }),
+    );
+    // Subscribe to new pending txs
+    ws.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "lmr_subscribe",
+        params: ["newPendingTransactions"],
+      }),
+    );
+  });
+
+  ws.on("message", (data) => {
+    try {
+      const msg = JSON.parse(data);
+      if (msg.method === "lmr_subscription") {
+        console.log(`[WS] Event received: ${msg.params.subscription}`);
+        // Immediately update dashboard on new block or tx
+        updateDashboard();
+      }
+    } catch (e) {
+      console.error("[WS] Message error:", e.message);
+    }
+  });
+
+  ws.on("close", () => {
+    console.log("[WS] Disconnected, retrying in 5s...");
+    setTimeout(connectToNodeWS, 5000);
+  });
+
+  ws.on("error", (err) => {
+    console.error("[WS] Error:", err.message);
+  });
+};
+
+connectToNodeWS();
+
+// Helper poll for stats only (less frequent)
+setInterval(updateDashboard, 15000);
 
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
@@ -105,7 +169,7 @@ io.on("connection", (socket) => {
   if (cachedPayload) {
     socket.emit("dashboard-update", cachedPayload);
   } else {
-    pollBlockchainData();
+    updateDashboard();
   }
 
   // Handle specific block requests
@@ -119,17 +183,19 @@ io.on("connection", (socket) => {
     const normalizedAddress = address.toLowerCase();
     console.log(`[Backend] Fetching data for address: ${normalizedAddress}`);
     try {
-      const [account, history] = await Promise.all([
+      const [account, history, events] = await Promise.all([
         callRpc("getAccount", [normalizedAddress]),
-        callRpc("getAddressHistory", [normalizedAddress]),
+        indexer.getAddressHistory(normalizedAddress),
+        indexer.getAddressEvents(normalizedAddress),
       ]);
       console.log(
-        `[Backend] Results for ${normalizedAddress}: Account=${!!account}, History=${history?.length || 0}`,
+        `[Backend] Results for ${normalizedAddress}: Account=${!!account}, History=${history?.length || 0}, Events=${events?.length || 0}`,
       );
       socket.emit("address-details", {
         address: normalizedAddress,
         account,
         history,
+        events,
       });
     } catch (error) {
       console.error(`[Backend] Error fetching address info:`, error.message);

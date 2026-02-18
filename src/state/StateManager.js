@@ -1,3 +1,4 @@
+import { EventEmitter } from "events";
 import { sha256, serialize } from "../utils/crypto.js";
 import { TX_TYPE } from "../core/transaction.js";
 import { createLogger } from "../utils/logger.js";
@@ -17,12 +18,13 @@ const logger = createLogger("StateManager");
  * }
  */
 
-export class StateManager {
+export class StateManager extends EventEmitter {
   /**
    * @param {import('./Database.js').Database} db
    * @param {import('../vm/ContractVM.js').ContractVM} contractVM
    */
   constructor(db, contractVM) {
+    super();
     this.db = db;
     this.contractVM = contractVM;
   }
@@ -106,8 +108,16 @@ export class StateManager {
 
     let totalFees = 0n;
 
+    const events = [];
+
     for (const txData of block.transactions) {
-      const result = await this._applyTx(txData, getAcc, changes, block);
+      const result = await this._applyTx(
+        txData,
+        getAcc,
+        changes,
+        block,
+        events,
+      );
       if (!result.ok) {
         logger.warn("Tx failed in block", {
           hash: txData.hash,
@@ -165,12 +175,31 @@ export class StateManager {
       value: currentSupply.toString(),
     });
 
+    // Save Events
+    for (const { txHash, contract, event, data } of events) {
+      ops.push({
+        type: "put",
+        key: `state:event:${txHash}:${Date.now()}`,
+        value: JSON.stringify({
+          contract,
+          event,
+          data,
+          blockIndex: block.index,
+        }),
+      });
+    }
+
     await this.db.batch(ops);
+
+    // Emit events for WebSocket subscribers
+    for (const e of events) {
+      this.emit("event:new", { ...e, blockIndex: block.index });
+    }
 
     return { ok: true };
   }
 
-  async _applyTx(txData, getAcc, changes, block) {
+  async _applyTx(txData, getAcc, changes, block, events) {
     const from = await getAcc(txData.from);
 
     // Nonce check
@@ -227,33 +256,19 @@ export class StateManager {
       }
 
       case TX_TYPE.CALL: {
-        const contract = await getAcc(txData.to);
-        if (!contract.code) return { ok: false, error: "Not a contract" };
-
-        const vmResult = await this.contractVM.call(
-          contract.code,
+        const vmResult = await this._executeCall(
+          txData.to,
+          txData.from,
+          BigInt(txData.amount),
           txData.data,
-          {
-            sender: txData.from,
-            value: BigInt(txData.amount),
-            address: txData.to,
-            block: { number: block.index, timestamp: block.timestamp },
-            storage: contract.storage,
-          },
+          block,
+          getAcc,
+          changes,
+          events,
+          txData.hash,
         );
 
         if (!vmResult.ok) return { ok: false, error: vmResult.error };
-        contract.storage = vmResult.storage;
-        changes.set(txData.to, contract);
-
-        // Handle LMR transfers from contract
-        if (vmResult.transfers) {
-          for (const { to, amount } of vmResult.transfers) {
-            const acc = await getAcc(to);
-            acc.balance += BigInt(amount);
-            changes.set(to, acc);
-          }
-        }
         break;
       }
 
@@ -278,6 +293,66 @@ export class StateManager {
     }
 
     return { ok: true };
+  }
+
+  async _executeCall(
+    target,
+    sender,
+    value,
+    data,
+    block,
+    getAcc,
+    changes,
+    allEvents,
+    txHash,
+  ) {
+    const contract = await getAcc(target);
+    if (!contract.code) return { ok: false, error: "Not a contract" };
+
+    const contractEvents = [];
+    const vmResult = await this.contractVM.call(contract.code, data, {
+      sender,
+      value: BigInt(value),
+      address: target,
+      block: { number: block.index, timestamp: block.timestamp },
+      storage: contract.storage,
+      events: contractEvents,
+      call: async (subTarget, subMethod, subArgs, subValue) => {
+        return this._executeCall(
+          subTarget,
+          target, // Current contract is the sender
+          subValue,
+          { method: subMethod, args: subArgs },
+          block,
+          getAcc,
+          changes,
+          allEvents,
+          txHash,
+        );
+      },
+    });
+
+    if (!vmResult.ok) return vmResult;
+
+    // Apply state changes
+    contract.storage = vmResult.storage;
+    changes.set(target, contract);
+
+    // Handle transfers
+    if (vmResult.transfers) {
+      for (const { to, amount } of vmResult.transfers) {
+        const acc = await getAcc(to);
+        acc.balance += BigInt(amount);
+        changes.set(to, acc);
+      }
+    }
+
+    // Collect events
+    for (const e of contractEvents) {
+      allEvents.push({ ...e, txHash, contract: target });
+    }
+
+    return vmResult;
   }
 
   _deriveContractAddress(from, nonce) {

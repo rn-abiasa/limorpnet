@@ -94,63 +94,142 @@ export class Blockchain extends EventEmitter {
 
   /**
    * Replace chain if incoming is longer and valid (longest chain rule)
-   * @param {Block[]} incomingChain
+   * @param {Block[]} incomingBlocks
    * @returns {boolean} true if replaced
    */
-  async resolveConflict(incomingChain) {
-    if (this.isSyncing) return false; // Prevent overlapping syncs
-    if (incomingChain.length <= this.chain.length) return false;
+  async resolveConflict(incomingBlocks) {
+    if (this.isSyncing) return false;
+    if (incomingBlocks.length === 0) return false;
 
-    if (!this._isValidChain(incomingChain)) {
-      logger.warn("Received invalid chain, ignoring");
+    const first = incomingBlocks[0];
+    const latest = this.getLatestBlock();
+
+    // 1. Check if this is just an incremental update (tip of the chain)
+    if (
+      first.index === latest.index + 1 &&
+      first.previousHash === latest.hash
+    ) {
+      for (const block of incomingBlocks) {
+        const result = await this.addBlock(block);
+        if (!result.ok) return false;
+      }
+      return true;
+    }
+
+    // 2. Check if this is a fork or a sync gap
+    // If incoming blocks are entirely ahead of us, we can't verify them yet without the middle part
+    if (first.index > latest.index + 1) {
+      logger.debug("Received future blocks, ignoring until gap is filled", {
+        first: first.index,
+        local: latest.index,
+      });
       return false;
     }
 
-    logger.info("Syncing with longer chain", {
-      oldHeight: this.getHeight(),
-      newHeight: incomingChain.length - 1,
-    });
+    // 3. Handle reorganization or filling gaps
+    // Find the common ancestor
+    let ancestorIdx = -1;
+    for (let i = 0; i < incomingBlocks.length; i++) {
+      const b = incomingBlocks[i];
+      const local = this.getBlock(b.index);
+      if (local && local.hash === b.hash) {
+        ancestorIdx = b.index;
+      } else {
+        break; // Found the split point
+      }
+    }
+
+    // If no common ancestor found in this chunk and it doesn't link to our chain
+    if (ancestorIdx === -1 && first.index > 0) {
+      const prevLocal = this.getBlock(first.index - 1);
+      if (prevLocal && prevLocal.hash === first.previousHash) {
+        ancestorIdx = first.index - 1;
+      } else {
+        logger.warn("Received blocks with no common ancestor in chunk", {
+          first: first.index,
+        });
+        return false;
+      }
+    }
+
+    // Only proceed if the incoming chain is actually better/longer (simple height rule for now)
+    const newHeight = incomingBlocks[incomingBlocks.length - 1].index;
+    if (newHeight <= latest.index) return false;
 
     this.isSyncing = true;
     try {
-      // Rebuild state from scratch to ensure consistency
-      await this.stateManager.reset();
-      await this.stateManager.applyGenesis(this.genesis.initialState);
+      logger.info("Resolving chain conflict", {
+        ancestor: ancestorIdx,
+        localHeight: latest.index,
+        newHeight,
+      });
 
-      const oldChain = this.chain;
-      this.chain = [];
+      // Rollback to ancestor if needed
+      if (ancestorIdx < latest.index) {
+        await this.rollback(ancestorIdx);
+      }
 
-      for (const block of incomingChain) {
-        if (block.index === 0) {
-          await this._saveBlock(block);
-          continue;
-        }
+      // Apply new blocks from the split point
+      const startIdxInChunk = incomingBlocks.findIndex(
+        (b) => b.index === ancestorIdx + 1,
+      );
+      const blocksToApply =
+        startIdxInChunk === -1
+          ? incomingBlocks
+          : incomingBlocks.slice(startIdxInChunk);
 
-        const result = await this.stateManager.applyBlock(block);
+      for (const block of blocksToApply) {
+        const result = await this.addBlock(block);
         if (!result.ok) {
-          logger.error("Sync failed: Block could not be applied to state", {
+          logger.error("Failed to apply block during resolution", {
             index: block.index,
             error: result.error,
           });
-          // Rollback: Restore old chain and return (state is corrupted though,
-          // node likely needs restart/re-sync)
-          this.chain = oldChain;
+          // If we fail here, the chain is in a weird state. In a real node, we'd need more complex recovery.
           return false;
         }
-        await this._saveBlock(block);
       }
 
-      this.emit("chain:replaced", this.chain);
-      logger.info("Chain successfully replaced", { height: this.getHeight() });
       return true;
     } catch (err) {
-      logger.error("Critical error during chain replacement", {
+      logger.error("Critical error during resolveConflict", {
         error: err.message,
       });
       return false;
     } finally {
       this.isSyncing = false;
     }
+  }
+
+  /**
+   * Revert blockchain and state to a specific height
+   * @param {number} targetIndex
+   */
+  async rollback(targetIndex) {
+    if (targetIndex >= this.chain.length - 1) return;
+
+    logger.warn("Rolling back chain", {
+      from: this.getHeight(),
+      to: targetIndex,
+    });
+
+    // 1. Update in-memory chain
+    this.chain = this.chain.slice(0, targetIndex + 1);
+
+    // 2. We must rebuild the state at targetIndex
+    // Simplified: Reset and apply from 0 to targetIndex
+    // TODO: In production, use state snapshots or proper reversible state changes
+    await this.stateManager.reset();
+    await this.stateManager.applyGenesis(this.genesis.initialState);
+
+    for (let i = 1; i <= targetIndex; i++) {
+      const result = await this.stateManager.applyBlock(this.chain[i]);
+      if (!result.ok)
+        throw new Error(`Rollback failed: could not re-apply block ${i}`);
+    }
+
+    // 3. Update DB height
+    await this.db.put("chain:height", String(targetIndex));
   }
 
   _isValidChain(chain) {
