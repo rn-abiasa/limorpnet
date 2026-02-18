@@ -28,10 +28,10 @@ export class PoS {
     const totalStake = eligible.reduce((sum, v) => sum + v.stake, 0n);
     if (totalStake === 0n) return null;
 
-    // Use both previous hash AND slot for deterministic rotation
+    // Use the full hash as a BigInt to ensure it's larger than any possible total stake
     const slotSeed = `${seed}-${slot}`;
-    const seedNum = BigInt("0x" + sha256(slotSeed).slice(0, 16));
-    let target = seedNum % totalStake;
+    const hashHex = sha256(slotSeed);
+    let target = BigInt("0x" + hashHex) % totalStake;
 
     for (const validator of eligible) {
       if (target < validator.stake) {

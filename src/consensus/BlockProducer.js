@@ -43,7 +43,13 @@ export class BlockProducer {
     if (!this._running) return;
     const latest = this.blockchain.getLatestBlock();
     const elapsed = Date.now() - latest.timestamp;
-    const delay = Math.max(0, this.pos.blockTime - elapsed);
+
+    // Calculate how much time until the NEXT slot starts
+    const slotDuration = this.pos.blockTime;
+    const currentSlot = Math.floor(elapsed / slotDuration);
+    const nextSlotStart = (currentSlot + 1) * slotDuration;
+    const delay = Math.max(100, nextSlotStart - elapsed);
+
     this._timer = setTimeout(() => this._tryProduce(), delay);
   }
 
