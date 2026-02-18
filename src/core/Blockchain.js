@@ -98,6 +98,7 @@ export class Blockchain extends EventEmitter {
    * @returns {boolean} true if replaced
    */
   async resolveConflict(incomingChain) {
+    if (this.isSyncing) return false; // Prevent overlapping syncs
     if (incomingChain.length <= this.chain.length) return false;
 
     if (!this._isValidChain(incomingChain)) {
@@ -105,36 +106,61 @@ export class Blockchain extends EventEmitter {
       return false;
     }
 
-    logger.info("Replacing chain", {
+    logger.info("Syncing with longer chain", {
       oldHeight: this.getHeight(),
       newHeight: incomingChain.length - 1,
     });
 
     this.isSyncing = true;
     try {
-      // Rebuild state from scratch
+      // Rebuild state from scratch to ensure consistency
       await this.stateManager.reset();
       await this.stateManager.applyGenesis(this.genesis.initialState);
 
+      const oldChain = this.chain;
       this.chain = [];
+
       for (const block of incomingChain) {
         if (block.index === 0) {
           await this._saveBlock(block);
           continue;
         }
-        await this.stateManager.applyBlock(block);
+
+        const result = await this.stateManager.applyBlock(block);
+        if (!result.ok) {
+          logger.error("Sync failed: Block could not be applied to state", {
+            index: block.index,
+            error: result.error,
+          });
+          // Rollback: Restore old chain and return (state is corrupted though,
+          // node likely needs restart/re-sync)
+          this.chain = oldChain;
+          return false;
+        }
         await this._saveBlock(block);
       }
 
       this.emit("chain:replaced", this.chain);
+      logger.info("Chain successfully replaced", { height: this.getHeight() });
       return true;
+    } catch (err) {
+      logger.error("Critical error during chain replacement", {
+        error: err.message,
+      });
+      return false;
     } finally {
       this.isSyncing = false;
     }
   }
 
   _isValidChain(chain) {
-    if (chain[0].hash !== this.chain[0].hash) return false; // must share genesis
+    if (chain[0].hash !== this.chain[0].hash) {
+      logger.warn("Invalid chain: Genesis hash mismatch", {
+        received: chain[0].hash.slice(0, 8),
+        local: this.chain[0].hash.slice(0, 8),
+      });
+      return false;
+    }
 
     for (let i = 1; i < chain.length; i++) {
       try {
@@ -142,13 +168,14 @@ export class Blockchain extends EventEmitter {
         if (!chain[i].verifySignature()) {
           logger.warn("Invalid chain: Signature verification failed", {
             index: chain[i].index,
+            hash: chain[i].hash.slice(0, 8),
           });
           return false;
         }
       } catch (err) {
-        logger.warn("Invalid chain:", {
-          error: err.message,
+        logger.warn("Invalid chain: Block validation failed", {
           index: chain[i].index,
+          error: err.message,
         });
         return false;
       }

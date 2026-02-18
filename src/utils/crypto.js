@@ -21,10 +21,24 @@ export function publicKeyToAddress(publicKeyHex) {
 }
 
 /**
- * Serialize data deterministically for hashing/signing
+ * Serialize data deterministically for hashing/signing (sorts keys)
  */
 export function serialize(obj) {
-  return JSON.stringify(obj, (_, v) =>
+  if (obj === null || typeof obj !== "object") {
+    return typeof obj === "bigint" ? obj.toString() : JSON.stringify(obj);
+  }
+
+  if (Array.isArray(obj)) {
+    return "[" + obj.map((item) => serialize(item)).join(",") + "]";
+  }
+
+  const sortedKeys = Object.keys(obj).sort();
+  const result = {};
+  for (const key of sortedKeys) {
+    result[key] = obj[key];
+  }
+
+  return JSON.stringify(result, (_, v) =>
     typeof v === "bigint" ? v.toString() : v,
   );
 }
