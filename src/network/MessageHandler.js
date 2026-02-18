@@ -1,5 +1,5 @@
-import { Block } from "../core/Block.js";
-import { Transaction } from "../core/Transaction.js";
+import { Block } from "../core/block.js";
+import { Transaction } from "../core/transaction.js";
 import { MSG } from "./P2PServer.js";
 import { createLogger } from "../utils/logger.js";
 

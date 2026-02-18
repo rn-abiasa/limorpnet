@@ -1,4 +1,4 @@
-import { Block } from "../core/Block.js";
+import { Block } from "../core/block.js";
 import { MSG } from "../network/P2PServer.js";
 import { createLogger } from "../utils/logger.js";
 

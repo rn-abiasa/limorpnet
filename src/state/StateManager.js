@@ -83,7 +83,7 @@ export class StateManager {
 
   /**
    * Apply all transactions in a block atomically
-   * @param {import('../core/Block.js').Block} block
+   * @param {import('../core/block.js').Block} block
    * @returns {{ ok: boolean, error?: string }}
    */
   async applyBlock(block) {

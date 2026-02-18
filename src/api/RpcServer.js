@@ -1,6 +1,6 @@
 import { createServer } from "http";
 import { createLogger } from "../utils/logger.js";
-import { Transaction, TX_TYPE } from "../core/Transaction.js";
+import { Transaction, TX_TYPE } from "../core/transaction.js";
 
 const logger = createLogger("RpcServer");
 

@@ -43,8 +43,8 @@ export class PoS {
   /**
    * Check if a given address is the expected validator for a block
    * @param {string} address
-   * @param {import('../core/Block.js').Block} block
-   * @param {import('../core/Block.js').Block} previousBlock
+   * @param {import('../core/block.js').Block} block
+   * @param {import('../core/block.js').Block} previousBlock
    * @param {Array<{address: string, stake: bigint}>} validators
    * @returns {boolean}
    */
@@ -55,7 +55,7 @@ export class PoS {
 
   /**
    * Check if it's time to produce a new block
-   * @param {import('../core/Block.js').Block} latestBlock
+   * @param {import('../core/block.js').Block} latestBlock
    * @returns {boolean}
    */
   isTimeToProduceBlock(latestBlock) {
