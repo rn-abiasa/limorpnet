@@ -50,6 +50,13 @@ export class MessageHandler {
   }
 
   async _handleNewBlock(data, ws) {
+    if (this.blockchain.isSyncing) {
+      logger.debug("Ignoring broadcast block during sync", {
+        index: data.index,
+      });
+      return;
+    }
+
     try {
       const block = Block.fromJSON(data);
 
@@ -77,6 +84,10 @@ export class MessageHandler {
   }
 
   async _handleNewTx(data, ws) {
+    if (this.blockchain.isSyncing) {
+      return; // Ignore broadcast txs during sync
+    }
+
     try {
       const tx = Transaction.fromJSON(data);
 

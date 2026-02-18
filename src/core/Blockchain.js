@@ -18,6 +18,7 @@ export class Blockchain extends EventEmitter {
     this.stateManager = stateManager;
     this.genesis = genesis;
     this.chain = []; // in-memory chain (index -> Block)
+    this.isSyncing = false;
   }
 
   async init() {
@@ -63,8 +64,10 @@ export class Blockchain extends EventEmitter {
   async addBlock(block) {
     const latest = this.getLatestBlock();
 
-    if (!block.isValid(latest)) {
-      return { ok: false, error: "Block structurally invalid" };
+    try {
+      block.isValid(latest);
+    } catch (err) {
+      return { ok: false, error: err.message };
     }
 
     if (!block.verifySignature()) {
@@ -106,30 +109,48 @@ export class Blockchain extends EventEmitter {
       newHeight: incomingChain.length - 1,
     });
 
-    // Rebuild state from scratch
-    await this.stateManager.reset();
-    await this.stateManager.applyGenesis(this.genesis.initialState);
+    this.isSyncing = true;
+    try {
+      // Rebuild state from scratch
+      await this.stateManager.reset();
+      await this.stateManager.applyGenesis(this.genesis.initialState);
 
-    this.chain = [];
-    for (const block of incomingChain) {
-      if (block.index === 0) {
+      this.chain = [];
+      for (const block of incomingChain) {
+        if (block.index === 0) {
+          await this._saveBlock(block);
+          continue;
+        }
+        await this.stateManager.applyBlock(block);
         await this._saveBlock(block);
-        continue;
       }
-      await this.stateManager.applyBlock(block);
-      await this._saveBlock(block);
-    }
 
-    this.emit("chain:replaced", this.chain);
-    return true;
+      this.emit("chain:replaced", this.chain);
+      return true;
+    } finally {
+      this.isSyncing = false;
+    }
   }
 
   _isValidChain(chain) {
     if (chain[0].hash !== this.chain[0].hash) return false; // must share genesis
 
     for (let i = 1; i < chain.length; i++) {
-      if (!chain[i].isValid(chain[i - 1])) return false;
-      if (!chain[i].verifySignature()) return false;
+      try {
+        chain[i].isValid(chain[i - 1]);
+        if (!chain[i].verifySignature()) {
+          logger.warn("Invalid chain: Signature verification failed", {
+            index: chain[i].index,
+          });
+          return false;
+        }
+      } catch (err) {
+        logger.warn("Invalid chain:", {
+          error: err.message,
+          index: chain[i].index,
+        });
+        return false;
+      }
     }
     return true;
   }

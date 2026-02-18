@@ -199,6 +199,7 @@ export class RpcServer {
       height: this.blockchain.getHeight(),
       peers: this.p2p.getPeerCount(),
       mempool: this.mempool.size(),
+      isSyncing: this.blockchain.isSyncing,
       timestamp: Date.now(),
     };
   }

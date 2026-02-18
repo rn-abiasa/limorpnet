@@ -77,9 +77,23 @@ export class Block {
   }
 
   isValid(previousBlock) {
-    if (this.hash !== this._calculateHash()) return false;
-    if (previousBlock && this.previousHash !== previousBlock.hash) return false;
-    if (previousBlock && this.index !== previousBlock.index + 1) return false;
+    if (this.hash !== this._calculateHash()) {
+      throw new Error(
+        `Hash mismatch: calculated ${this._calculateHash().slice(0, 8)} != received ${this.hash.slice(0, 8)}`,
+      );
+    }
+    if (previousBlock) {
+      if (this.previousHash !== previousBlock.hash) {
+        throw new Error(
+          `Chain link mismatch: block.previousHash (${this.previousHash.slice(0, 8)}) != latest.hash (${previousBlock.hash.slice(0, 8)})`,
+        );
+      }
+      if (this.index !== previousBlock.index + 1) {
+        throw new Error(
+          `Index mismatch: expected ${previousBlock.index + 1}, got ${this.index}`,
+        );
+      }
+    }
     return true;
   }
 

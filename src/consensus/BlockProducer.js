@@ -47,7 +47,7 @@ export class BlockProducer {
   }
 
   async _tryProduce() {
-    if (!this._running) return;
+    if (!this._running || this.blockchain.isSyncing) return;
 
     try {
       const latest = this.blockchain.getLatestBlock();
@@ -55,10 +55,13 @@ export class BlockProducer {
 
       // Check if we are the selected validator
       const selected = this.pos.selectValidator(validators, latest.hash);
-      if (selected !== this.wallet.address) {
+      const ourAddress = this.wallet.address.toLowerCase();
+
+      if (!selected || selected.toLowerCase() !== ourAddress) {
         logger.debug("Not our turn to produce", {
-          selected,
-          us: this.wallet.address,
+          slotLeader: selected,
+          us: ourAddress,
+          height: latest.index + 1,
         });
         this._schedule();
         return;
