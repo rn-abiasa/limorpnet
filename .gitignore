@@ -3,5 +3,4 @@ data/
 .env
 *.log
 docs
-limorp_island
 node2
