@@ -31,6 +31,7 @@ async function main() {
   // ── Blockchain ────────────────────────────────────────────────────────────
   const blockchain = new Blockchain({ db, stateManager, genesis });
   await blockchain.init();
+  await stateManager.ensureTotalSupply();
 
   // ── Mempool ───────────────────────────────────────────────────────────────
   const mempool = new Mempool();

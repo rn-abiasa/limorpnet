@@ -38,6 +38,7 @@ export class Blockchain extends EventEmitter {
         this.chain.push(Block.fromJSON(JSON.parse(raw)));
       }
       logger.info("Chain loaded from DB", { height });
+      await this.stateManager.ensureTotalSupply();
     }
   }
 

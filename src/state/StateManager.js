@@ -13,6 +13,7 @@ const logger = createLogger("StateManager");
  *   code:    string | null,    // contract bytecode
  *   storage: object,           // contract storage
  *   stake:   string (BigInt),  // staked amount
+ *   mined:   string (BigInt),  // total rewards mined
  * }
  */
 
@@ -34,6 +35,7 @@ export class StateManager {
     const acc = JSON.parse(raw);
     acc.balance = BigInt(acc.balance);
     acc.stake = BigInt(acc.stake || "0");
+    acc.mined = BigInt(acc.mined || "0");
     return acc;
   }
 
@@ -45,6 +47,7 @@ export class StateManager {
         code: null,
         storage: {},
         stake: 0n,
+        mined: 0n,
       }
     );
   }
@@ -58,6 +61,7 @@ export class StateManager {
         code: account.code ?? null,
         storage: account.storage ?? {},
         stake: account.stake.toString(),
+        mined: (account.mined || 0n).toString(),
       }),
     );
   }
@@ -74,9 +78,14 @@ export class StateManager {
         stake: BigInt(data.stake || "0"),
       });
     }
-    logger.info("Genesis state applied", {
-      accounts: Object.keys(initialState).length,
-    });
+
+    let supply = 0n;
+    for (const data of Object.values(initialState)) {
+      supply += BigInt(data.balance || "0");
+      supply += BigInt(data.stake || "0");
+    }
+    await this.db.put("state:totalSupply", supply.toString());
+    logger.info("Total supply initialized", { supply: supply.toString() });
   }
 
   // ─── Block Application ──────────────────────────────────────────────────────
@@ -115,7 +124,9 @@ export class StateManager {
 
     // Berikan reward + porsi fee ke validator
     const validatorAcc = await getAcc(block.validator);
-    validatorAcc.balance += blockReward + toValidator;
+    const totalReward = blockReward + toValidator;
+    validatorAcc.balance += totalReward;
+    validatorAcc.mined = (validatorAcc.mined || 0n) + totalReward;
     changes.set(block.validator, validatorAcc);
 
     logger.info("Block applied with tokenomics", {
@@ -137,9 +148,23 @@ export class StateManager {
           code: account.code ?? null,
           storage: account.storage ?? {},
           stake: account.stake.toString(),
+          mined: (account.mined || 0n).toString(),
         }),
       });
     }
+
+    // Update Total Supply
+    // Supply = Old + Reward - BurnedFees
+    let currentSupply = await this.getTotalSupply();
+    const burnedFees = totalFees - toValidator;
+    currentSupply = currentSupply + blockReward - burnedFees;
+
+    ops.push({
+      type: "put",
+      key: "state:totalSupply",
+      value: currentSupply.toString(),
+    });
+
     await this.db.batch(ops);
 
     return { ok: true };
@@ -271,6 +296,46 @@ export class StateManager {
       }
     }
     return validators;
+  }
+
+  async getTotalSupply() {
+    return BigInt(await this.db.get("state:totalSupply").catch(() => "0"));
+  }
+
+  /**
+   * Recalculate and update the total supply from all accounts.
+   */
+  async recalculateTotalSupply() {
+    logger.info("Recalculating total supply from scratch...");
+    let total = 0n;
+    for await (const { value } of this.db.iterate("state:account:")) {
+      const acc = JSON.parse(value);
+      total += BigInt(acc.balance || "0");
+      total += BigInt(acc.stake || "0");
+    }
+    await this.db.put("state:totalSupply", total.toString());
+    logger.info("Total supply recalculated and saved", {
+      supply: total.toString(),
+    });
+    return total;
+  }
+
+  async ensureTotalSupply() {
+    try {
+      const supplyStr = await this.db.get("state:totalSupply");
+      const supply = BigInt(supplyStr);
+
+      // Simple heuristic: if supply is less than 1M LMR but we have a validator,
+      // it's likely corrupted (genesis usually has ~10M+).
+      if (supply < 1_000_000n * 1_000_000_000_000_000_000n) {
+        logger.warn(
+          "Total supply seems suspiciously low, triggering repair...",
+        );
+        await this.recalculateTotalSupply();
+      }
+    } catch {
+      await this.recalculateTotalSupply();
+    }
   }
 
   // ─── Reset ──────────────────────────────────────────────────────────────────

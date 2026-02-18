@@ -1,6 +1,7 @@
 import { createServer } from "http";
 import { createLogger } from "../utils/logger.js";
 import { Transaction, TX_TYPE } from "../core/transaction.js";
+import { calculateBlockReward } from "../utils/rewards.js";
 
 const logger = createLogger("RpcServer");
 
@@ -76,6 +77,9 @@ export class RpcServer {
       case "getNonce":
         return this._getNonce(params[0]);
 
+      case "getCode":
+        return this._getCode(params[0]);
+
       case "sendTransaction":
         return this._sendTransaction(params[0]);
 
@@ -103,6 +107,14 @@ export class RpcServer {
       case "getPeerCount":
         return this.p2p.getPeerCount();
 
+      case "getAddressHistory":
+        return this._getAddressHistory(params[0]);
+
+      case "recalculateTotalSupply":
+        return (
+          await this.blockchain.stateManager.recalculateTotalSupply()
+        ).toString();
+
       case "getNodeInfo":
         return this._getNodeInfo();
 
@@ -113,26 +125,41 @@ export class RpcServer {
 
   async _getBalance(address) {
     if (!address) throw new Error("address required");
-    const account = await this.blockchain.stateManager.getAccount(address);
+    const account = await this.blockchain.stateManager.getAccount(
+      address.toLowerCase(),
+    );
     return account ? account.balance.toString() : "0";
   }
 
   async _getAccount(address) {
     if (!address) throw new Error("address required");
-    const account = await this.blockchain.stateManager.getAccount(address);
+    const account = await this.blockchain.stateManager.getAccount(
+      address.toLowerCase(),
+    );
     if (!account) return null;
     return {
       balance: account.balance.toString(),
       nonce: account.nonce,
       stake: account.stake.toString(),
+      mined: (account.mined || 0n).toString(),
       hasCode: !!account.code,
     };
   }
 
   async _getNonce(address) {
     if (!address) throw new Error("address required");
-    const account = await this.blockchain.stateManager.getAccount(address);
+    const account = await this.blockchain.stateManager.getAccount(
+      address.toLowerCase(),
+    );
     return account ? account.nonce : 0;
+  }
+
+  async _getCode(address) {
+    if (!address) throw new Error("address required");
+    const account = await this.blockchain.stateManager.getAccount(
+      address.toLowerCase(),
+    );
+    return account ? account.code || "0x" : "0x";
   }
 
   async _sendTransaction(txData) {
@@ -182,7 +209,11 @@ export class RpcServer {
     const block = this.blockchain.getBlock(
       isNaN(indexOrHash) ? indexOrHash : parseInt(indexOrHash),
     );
-    return block ? block.toJSON() : null;
+    if (!block) return null;
+
+    const json = block.toJSON();
+    json.reward = calculateBlockReward(block.index).toString();
+    return json;
   }
 
   async _getValidators() {
@@ -193,14 +224,48 @@ export class RpcServer {
     }));
   }
 
-  _getNodeInfo() {
+  async _getNodeInfo() {
     return {
       chainId: this.blockchain.genesis.chainId,
       height: this.blockchain.getHeight(),
       peers: this.p2p.getPeerCount(),
       mempool: this.mempool.size(),
       isSyncing: this.blockchain.isSyncing,
+      totalSupply: (
+        await this.blockchain.stateManager.getTotalSupply()
+      ).toString(),
       timestamp: Date.now(),
     };
+  }
+
+  async _getAddressHistory(address) {
+    if (!address) throw new Error("address required");
+    const targetAddr = address.toLowerCase();
+
+    const history = [];
+    const maxScan = 5000; // Limit scan to improve performance
+    const chainLength = this.blockchain.chain.length;
+    const startIdx = Math.max(0, chainLength - maxScan);
+
+    // Scan chain from newest to oldest
+    for (let i = chainLength - 1; i >= startIdx; i--) {
+      const block = this.blockchain.chain[i];
+      for (const tx of block.transactions) {
+        if (
+          tx.from?.toLowerCase() === targetAddr ||
+          tx.to?.toLowerCase() === targetAddr
+        ) {
+          history.push({
+            ...(tx.toJSON ? tx.toJSON() : tx),
+            status: "confirmed",
+            blockIndex: block.index,
+            timestamp: block.timestamp,
+          });
+        }
+      }
+      // Avoid blocking the event loop if the scan is large
+      if (i % 500 === 0) await new Promise((resolve) => setImmediate(resolve));
+    }
+    return history;
   }
 }
