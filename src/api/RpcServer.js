@@ -55,14 +55,17 @@ export class RpcServer {
           }
 
           ws.send(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              method: "lmr_subscription",
-              params: {
-                subscription: id,
-                result: data,
+            JSON.stringify(
+              {
+                jsonrpc: "2.0",
+                method: "lmr_subscription",
+                params: {
+                  subscription: id,
+                  result: data,
+                },
               },
-            }),
+              (k, v) => (typeof v === "bigint" ? v.toString() : v),
+            ),
           );
         }
       }
@@ -84,7 +87,11 @@ export class RpcServer {
 
       if (req.method !== "POST") {
         res.writeHead(405);
-        res.end(JSON.stringify({ error: "Method not allowed" }));
+        res.end(
+          JSON.stringify({ error: "Method not allowed" }, (k, v) =>
+            typeof v === "bigint" ? v.toString() : v,
+          ),
+        );
         return;
       }
 
@@ -95,15 +102,22 @@ export class RpcServer {
           const rpc = JSON.parse(body);
           const result = await this._dispatch(rpc);
           res.writeHead(200);
-          res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
+          res.end(
+            JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }, (k, v) =>
+              typeof v === "bigint" ? v.toString() : v,
+            ),
+          );
         } catch (err) {
           logger.warn("RPC error", { error: err.message });
           res.writeHead(400);
           res.end(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32600, message: err.message },
-            }),
+            JSON.stringify(
+              {
+                jsonrpc: "2.0",
+                error: { code: -32600, message: err.message },
+              },
+              (k, v) => (typeof v === "bigint" ? v.toString() : v),
+            ),
           );
         }
       });
@@ -118,14 +132,21 @@ export class RpcServer {
         try {
           const rpc = JSON.parse(message);
           const result = await this._dispatch(rpc, ws);
-          ws.send(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
+          ws.send(
+            JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }, (k, v) =>
+              typeof v === "bigint" ? v.toString() : v,
+            ),
+          );
         } catch (err) {
           ws.send(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: null,
-              error: { code: -32600, message: err.message },
-            }),
+            JSON.stringify(
+              {
+                jsonrpc: "2.0",
+                id: null,
+                error: { code: -32600, message: err.message },
+              },
+              (k, v) => (typeof v === "bigint" ? v.toString() : v),
+            ),
           );
         }
       });
@@ -166,6 +187,9 @@ export class RpcServer {
 
       case "getTransaction":
         return this._getTransaction(params[0]);
+
+      case "getTransactionReceipt":
+        return this._getTransactionReceipt(params[0]);
 
       case "getBlock":
         return this._getBlock(params[0]);
@@ -282,6 +306,18 @@ export class RpcServer {
     return { hash: tx.hash };
   }
 
+  async _getTransactionReceipt(hash) {
+    if (!hash) throw new Error("hash required");
+    try {
+      const receipt = await this.blockchain.stateManager.db.get(
+        `state:receipt:${hash}`,
+      );
+      return JSON.parse(receipt);
+    } catch (e) {
+      return null;
+    }
+  }
+
   async _getTransaction(hash) {
     if (!hash) throw new Error("hash required");
 
@@ -303,7 +339,7 @@ export class RpcServer {
     return null;
   }
 
-  _getBlock(indexOrHash) {
+  async _getBlock(indexOrHash) {
     const block = this.blockchain.getBlock(
       isNaN(indexOrHash) ? indexOrHash : parseInt(indexOrHash),
     );
@@ -311,6 +347,16 @@ export class RpcServer {
 
     const json = block.toJSON();
     json.reward = calculateBlockReward(block.index).toString();
+
+    // Optionally include receipts for all block transactions
+    const receipts = [];
+    for (const tx of block.transactions) {
+      const txHash = tx.hash || tx;
+      const receipt = await this._getTransactionReceipt(txHash);
+      if (receipt) receipts.push(receipt);
+    }
+    json.receipts = receipts;
+
     return json;
   }
 

@@ -83,11 +83,20 @@ export class Blockchain extends EventEmitter {
 
     await this._saveBlock(block);
     this.emit("block:new", block);
-    logger.info("Block added", {
-      index: block.index,
-      hash: block.hash,
-      txCount: block.transactions.length,
-    });
+
+    // Throttle logging during sync
+    const isSync = this.isSyncing || this.db.isSyncing; // Some nodes use db.isSyncing
+    if (isSync) {
+      if (block.index % 100 === 0) {
+        logger.info(`Sync in progress: Block ${block.index} added`);
+      }
+    } else {
+      logger.info(`Block added: #${block.index}`);
+      logger.debug("Block details", {
+        hash: block.hash,
+        txCount: block.transactions.length,
+      });
+    }
 
     return { ok: true };
   }

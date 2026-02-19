@@ -57,14 +57,17 @@ export class StateManager extends EventEmitter {
   async saveAccount(address, account) {
     await this.db.put(
       `state:account:${address}`,
-      JSON.stringify({
-        balance: account.balance.toString(),
-        nonce: account.nonce,
-        code: account.code ?? null,
-        storage: account.storage ?? {},
-        stake: account.stake.toString(),
-        mined: (account.mined || 0n).toString(),
-      }),
+      JSON.stringify(
+        {
+          balance: account.balance.toString(),
+          nonce: account.nonce,
+          code: account.code ?? null,
+          storage: account.storage ?? {},
+          stake: account.stake.toString(),
+          mined: (account.mined || 0n).toString(),
+        },
+        (k, v) => (typeof v === "bigint" ? v.toString() : v),
+      ),
     );
   }
 
@@ -109,8 +112,12 @@ export class StateManager extends EventEmitter {
     let totalFees = 0n;
 
     const events = [];
+    const receipts = [];
 
     for (const txData of block.transactions) {
+      // Per-transaction event collection for the receipt
+      const beforeEventsLen = events.length;
+
       const result = await this._applyTx(
         txData,
         getAcc,
@@ -118,13 +125,33 @@ export class StateManager extends EventEmitter {
         block,
         events,
       );
+
+      // Construct Receipt
+      const receipt = {
+        txHash: txData.hash,
+        status: result.ok ? 1 : 0,
+        contractAddress: txData._contractAddress || null,
+        logs: events.slice(beforeEventsLen).map((e) => ({
+          event: e.event,
+          data: e.data,
+          contract: e.contract,
+        })),
+        error: result.ok ? null : result.error,
+        blockIndex: block.index,
+        timestamp: block.timestamp,
+      };
+      receipts.push(receipt);
+
       if (!result.ok) {
-        logger.warn("Tx failed in block", {
+        logger.warn("Tx failed in block (Receipt stored)", {
           hash: txData.hash,
           error: result.error,
         });
-        continue;
+        // We DO NOT 'continue' here anymore if the fee was taken
+        // In _applyTx, if nonce/balance is wrong, it returns early and fee isn't taken.
+        // If VM fails, fee is taken and it returns {ok:false}.
       }
+
       totalFees += BigInt(txData.fee || 0);
     }
 
@@ -139,7 +166,7 @@ export class StateManager extends EventEmitter {
     validatorAcc.mined = (validatorAcc.mined || 0n) + totalReward;
     changes.set(block.validator, validatorAcc);
 
-    logger.info("Block applied with tokenomics", {
+    logger.debug("Block tokenomics applied", {
       index: block.index,
       reward: blockReward.toString(),
       feesCollected: totalFees.toString(),
@@ -152,14 +179,17 @@ export class StateManager extends EventEmitter {
       ops.push({
         type: "put",
         key: `state:account:${address}`,
-        value: JSON.stringify({
-          balance: account.balance.toString(),
-          nonce: account.nonce,
-          code: account.code ?? null,
-          storage: account.storage ?? {},
-          stake: account.stake.toString(),
-          mined: (account.mined || 0n).toString(),
-        }),
+        value: JSON.stringify(
+          {
+            balance: account.balance.toString(),
+            nonce: account.nonce,
+            code: account.code ?? null,
+            storage: account.storage ?? {},
+            stake: account.stake.toString(),
+            mined: (account.mined || 0n).toString(),
+          },
+          (k, v) => (typeof v === "bigint" ? v.toString() : v),
+        ),
       });
     }
 
@@ -175,17 +205,31 @@ export class StateManager extends EventEmitter {
       value: currentSupply.toString(),
     });
 
+    // Save Receipts
+    for (const receipt of receipts) {
+      ops.push({
+        type: "put",
+        key: `state:receipt:${receipt.txHash}`,
+        value: JSON.stringify(receipt, (k, v) =>
+          typeof v === "bigint" ? v.toString() : v,
+        ),
+      });
+    }
+
     // Save Events
     for (const { txHash, contract, event, data } of events) {
       ops.push({
         type: "put",
         key: `state:event:${txHash}:${Date.now()}`,
-        value: JSON.stringify({
-          contract,
-          event,
-          data,
-          blockIndex: block.index,
-        }),
+        value: JSON.stringify(
+          {
+            contract,
+            event,
+            data,
+            blockIndex: block.index,
+          },
+          (k, v) => (typeof v === "bigint" ? v.toString() : v),
+        ),
       });
     }
 
@@ -225,20 +269,37 @@ export class StateManager extends EventEmitter {
         const to = await getAcc(txData.to);
         to.balance += BigInt(txData.amount);
         changes.set(txData.to, to);
-        break;
+        return { ok: true };
       }
 
       case TX_TYPE.DEPLOY: {
         const contractAddress = this._deriveContractAddress(
           txData.from,
-          txData.nonce - 1,
+          txData.nonce,
         );
+
+        let code = txData.data;
+        let args = [];
+
+        try {
+          // If data is JSON, try to extract code and args (modern format)
+          if (txData.data.trim().startsWith("{")) {
+            const parsed = JSON.parse(txData.data);
+            if (parsed.code) {
+              code = parsed.code;
+              args = parsed.args || [];
+            }
+          }
+        } catch (e) {
+          // Fallback to raw code
+        }
+
         const contract = await getAcc(contractAddress);
-        contract.code = txData.data;
+        contract.code = code;
         contract.storage = {};
 
         // Run constructor
-        const vmResult = await this.contractVM.deploy(txData.data, {
+        const vmResult = await this.contractVM.deploy(code, args, {
           sender: txData.from,
           value: BigInt(txData.amount),
           address: contractAddress,
@@ -252,7 +313,7 @@ export class StateManager extends EventEmitter {
 
         // Return contract address in a way callers can read
         txData._contractAddress = contractAddress;
-        break;
+        return { ok: true };
       }
 
       case TX_TYPE.CALL: {
@@ -269,7 +330,7 @@ export class StateManager extends EventEmitter {
         );
 
         if (!vmResult.ok) return { ok: false, error: vmResult.error };
-        break;
+        return { ok: true };
       }
 
       case TX_TYPE.STAKE: {

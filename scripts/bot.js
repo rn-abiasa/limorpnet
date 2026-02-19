@@ -24,10 +24,10 @@ function serialize(obj) {
 
 const RPC_PORT = process.env.RPC_PORT || "3000";
 const RPC_URL = `http://localhost:${RPC_PORT}`;
-const BOT_DATA_PATH = "./scripts/bot_wallets.json";
+const BOT_DATA_PATH = "./bot_wallets.json";
 const BOT_COUNT = 10;
 
-const BOT_INTERVAL_MS = 500; // Delay base in milliseconds (3 seconds)
+const BOT_INTERVAL_MS = 0.5; // Delay base in milliseconds (3 seconds)
 
 async function rpc(method, params = []) {
   try {

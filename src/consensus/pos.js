@@ -1,5 +1,5 @@
 import { createLogger } from "../utils/logger.js";
-import { sha256 } from "../utils/crypto.js";
+import { sha256, serialize } from "../utils/crypto.js";
 
 const logger = createLogger("PoS");
 
@@ -33,6 +33,9 @@ export class PoS {
 
     // Use a fixed seed for the primary winner of this block height
     // This makes the rotation predictable across nodes
+    if (typeof sha256 !== "function") {
+      throw new Error("sha256 is not defined in selectValidator scope!");
+    }
     const baseTarget = BigInt("0x" + sha256(seed)) % totalStake;
 
     // Find the primary weighted-random winner index

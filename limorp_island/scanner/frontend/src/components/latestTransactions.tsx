@@ -1,4 +1,10 @@
-import { ArrowRight, FileText, ChevronRight } from "lucide-react";
+import {
+  ArrowRight,
+  FileText,
+  ChevronRight,
+  CheckCircle2,
+  XCircle,
+} from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { formatLMR } from "@/lib/utils";
 
@@ -33,14 +39,30 @@ const LatestTransactions = ({ transactions = [] }: { transactions: any[] }) => {
                 <a
                   href={`/tx/${tx.hash}`}
                   className="text-sm font-medium text-blue-500 max-w-20 hover:underline block truncate"
-                >
-                  {tx.hash}
-                </a>
-                <p className="text-[10px] text-muted-foreground">
-                  {tx.timestamp
-                    ? formatDistanceToNow(new Date(tx.timestamp)) + " ago"
-                    : "Confirmed"}
-                </p>
+                ></a>
+                <div className="flex items-center gap-2 mt-1">
+                  {tx.status === "success" ? (
+                    <span className="flex items-center gap-0.5 text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">
+                      <CheckCircle2 className="w-2 h-2" /> SUCCESS
+                    </span>
+                  ) : tx.status === "failed" ? (
+                    <span
+                      className="flex items-center gap-0.5 text-[9px] font-bold text-rose-600 bg-rose-50 px-1 rounded border border-rose-100"
+                      title={tx.error}
+                    >
+                      <XCircle className="w-2 h-2" /> FAILED
+                    </span>
+                  ) : (
+                    <span className="text-[9px] text-muted-foreground italic">
+                      Pending
+                    </span>
+                  )}
+                  <p className="text-[10px] text-muted-foreground">
+                    {tx.timestamp
+                      ? formatDistanceToNow(new Date(tx.timestamp)) + " ago"
+                      : "Confirmed"}
+                  </p>
+                </div>
               </div>
             </div>
             <div className="hidden md:flex items-center gap-2 text-sm">

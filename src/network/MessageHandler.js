@@ -201,7 +201,12 @@ export class MessageHandler {
             if (!replaced) break;
 
             currentHeight = this.blockchain.getHeight();
-            logger.info("Sync progress", { currentHeight, targetHeight });
+            const progress = ((currentHeight / targetHeight) * 100).toFixed(2);
+            if (currentHeight % 100 === 0 || currentHeight === targetHeight) {
+              logger.info(
+                `Sync Progress: ${progress}% (${currentHeight}/${targetHeight})`,
+              );
+            }
           }
         } catch (err) {
           logger.warn(`Sync failed with peer: ${err.message}`);

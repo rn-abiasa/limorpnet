@@ -8,16 +8,40 @@ const Transactions = () => {
     stats: null,
     latestTransactions: [],
   });
+  const [page, setPage] = useState(1);
+  const [paginatedTxs, setPaginatedTxs] = useState<any[]>([]);
+  const [hasMore, setHasMore] = useState(true);
 
   useEffect(() => {
+    // Regular dashboard updates for stats
     socket.on("dashboard-update", (payload: any) => {
       setData(payload);
     });
 
+    // Specific pagination responses
+    socket.on("pagination-txs-res", (res: any) => {
+      if (res.page === 1) {
+        setPaginatedTxs(res.transactions);
+      } else {
+        setPaginatedTxs((prev) => [...prev, ...res.transactions]);
+      }
+      setHasMore(res.hasMore);
+    });
+
+    // Initial fetch
+    socket.emit("get-pagination-txs", { page: 1, limit: 25 });
+
     return () => {
       socket.off("dashboard-update");
+      socket.off("pagination-txs-res");
     };
   }, []);
+
+  const handleLoadMore = () => {
+    const nextPage = page + 1;
+    setPage(nextPage);
+    socket.emit("get-pagination-txs", { page: nextPage, limit: 25 });
+  };
 
   return (
     <div className="min-h-screen bg-slate-50/50">
@@ -66,7 +90,18 @@ const Transactions = () => {
             </div>
           </div>
 
-          <TransactionsList transactions={data.latestTransactions} />
+          <TransactionsList transactions={paginatedTxs} />
+
+          {hasMore && (
+            <div className="flex justify-center mt-4">
+              <button
+                onClick={handleLoadMore}
+                className="px-6 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-colors font-medium shadow-md"
+              >
+                Load More Transactions
+              </button>
+            </div>
+          )}
         </div>
       </main>
 

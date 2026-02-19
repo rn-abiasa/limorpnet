@@ -10,15 +10,47 @@ const Blocks = () => {
     latestBlocks: [],
   });
 
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(25);
+  const [paginatedBlocks, setPaginatedBlocks] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+
   useEffect(() => {
+    // Live updates for stats
     socket.on("dashboard-update", (payload: any) => {
       setData(payload);
+      if (page === 1) {
+        // If on first page, we can show live blocks or refresh paginated
+        setTotal(payload.stats.height + 1);
+      }
     });
+
+    socket.on("pagination-blocks-res", (res: any) => {
+      setPaginatedBlocks(res.blocks);
+      setTotal(res.total);
+    });
+
+    // Initial fetch
+    socket.emit("get-pagination-blocks", { page, limit });
 
     return () => {
       socket.off("dashboard-update");
+      socket.off("pagination-blocks-res");
     };
-  }, []);
+  }, [page, limit]);
+
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+    socket.emit("get-pagination-blocks", { page: newPage, limit });
+  };
+
+  const handleLimitChange = (newLimit: number) => {
+    setLimit(newLimit);
+    setPage(1); // Reset to first page
+    socket.emit("get-pagination-blocks", { page: 1, limit: newLimit });
+  };
+
+  const isLive = page === 1 && limit === 25;
 
   return (
     <div className="min-h-screen bg-slate-50/50">
@@ -45,8 +77,8 @@ const Blocks = () => {
                   Network Summary
                 </p>
                 <h3 className="text-xl font-bold mt-1">
-                  {data.stats?.height
-                    ? data.stats.height.toLocaleString()
+                  {data.stats?.height !== undefined
+                    ? (data.stats.height + 1).toLocaleString()
                     : "..."}{" "}
                   Blocks
                 </h3>
@@ -70,7 +102,17 @@ const Blocks = () => {
             </div>
           </div>
 
-          <BlocksList blocks={data.latestBlocks} />
+          <BlocksList
+            blocks={
+              paginatedBlocks.length > 0 ? paginatedBlocks : data.latestBlocks
+            }
+            page={page}
+            limit={limit}
+            total={total}
+            onPageChange={handlePageChange}
+            onLimitChange={handleLimitChange}
+            isLive={isLive}
+          />
         </div>
       </main>
 

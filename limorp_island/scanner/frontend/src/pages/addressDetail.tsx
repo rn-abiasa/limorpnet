@@ -8,6 +8,8 @@ import {
   Coins,
   History,
   Info,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 import Navbar from "@/components/navbar";
 import { socket } from "@/lib/socket";
@@ -74,7 +76,14 @@ const AddressDetail = () => {
                 <Wallet className="w-6 h-6" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold tracking-tight">Address</h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-bold tracking-tight">Address</h1>
+                  {account?.code ? (
+                    <span className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full border border-purple-200 font-bold">
+                      Contract
+                    </span>
+                  ) : null}
+                </div>
                 <p className="text-sm font-mono text-muted-foreground break-all">
                   {address}
                 </p>
@@ -149,6 +158,7 @@ const AddressDetail = () => {
                 <thead className="bg-muted/50 text-muted-foreground font-medium border-b">
                   <tr>
                     <th className="px-4 py-3">Tx Hash</th>
+                    <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Type</th>
                     <th className="px-4 py-3">Block</th>
                     <th className="px-4 py-3">Age</th>
@@ -178,6 +188,17 @@ const AddressDetail = () => {
                           >
                             {tx.hash}
                           </Link>
+                        </td>
+                        <td className="px-4 py-4">
+                          {tx.status === "success" ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                          ) : tx.status === "failed" ? (
+                            <div title={tx.error}>
+                              <XCircle className="w-4 h-4 text-rose-500" />
+                            </div>
+                          ) : (
+                            <div className="w-2 h-2 rounded-full bg-slate-300 animate-pulse" />
+                          )}
                         </td>
                         <td className="px-4 py-4">
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase border bg-slate-50 text-slate-600">
@@ -265,7 +286,7 @@ const AddressDetail = () => {
                 {data.events?.length > 0 ? (
                   <div className="space-y-3">
                     <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider mb-2">
-                      Contract Assets (LSP-20)
+                      Contract Interactions & Assets
                     </p>
                     {/* Unique tokens based on contract address */}
                     {Array.from(
@@ -282,14 +303,14 @@ const AddressDetail = () => {
                         >
                           <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 text-[10px] font-bold italic">
-                              TOK
+                              <Coins className="w-4 h-4 text-slate-500" />
                             </div>
                             <div>
                               <p className="font-bold text-sm text-slate-900">
-                                Token at {contractAddr.slice(0, 8)}...
+                                Contract {contractAddr.slice(0, 8)}...
                               </p>
                               <p className="text-[10px] text-muted-foreground">
-                                {tokenEvents.length} Recent Activity
+                                {tokenEvents.length} Interaction(s)
                               </p>
                             </div>
                           </div>

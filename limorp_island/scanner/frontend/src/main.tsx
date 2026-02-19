@@ -6,6 +6,7 @@ import Blocks from "./pages/blocks";
 import BlockDetail from "./pages/blockDetail";
 import AddressDetail from "./pages/addressDetail";
 import Transactions from "./pages/transactions";
+import Tokens from "./pages/tokens";
 import "./index.css";
 
 const router = createBrowserRouter([
@@ -28,6 +29,10 @@ const router = createBrowserRouter([
   {
     path: "/txs",
     element: <Transactions />,
+  },
+  {
+    path: "/tokens",
+    element: <Tokens />,
   },
 ]);
 

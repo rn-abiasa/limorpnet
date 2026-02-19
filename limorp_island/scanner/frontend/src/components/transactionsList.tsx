@@ -1,4 +1,11 @@
-import { FileText, ChevronLeft, ChevronRight, ArrowRight } from "lucide-react";
+import {
+  FileText,
+  ChevronLeft,
+  ChevronRight,
+  ArrowRight,
+  CheckCircle2,
+  XCircle,
+} from "lucide-react";
 import { formatLMR } from "@/lib/utils";
 
 const TransactionsList = ({ transactions = [] }: { transactions: any[] }) => {
@@ -30,6 +37,7 @@ const TransactionsList = ({ transactions = [] }: { transactions: any[] }) => {
           <thead className="bg-muted/50 text-muted-foreground font-medium border-b">
             <tr>
               <th className="px-4 py-3">Txn Hash</th>
+              <th className="px-4 py-3 text-center">Status</th>
               <th className="px-4 py-3 hidden md:table-cell">Method</th>
               <th className="px-4 py-3">Block</th>
               <th className="px-4 py-3 hidden lg:table-cell">Age</th>
@@ -44,6 +52,21 @@ const TransactionsList = ({ transactions = [] }: { transactions: any[] }) => {
                 key={idx}
                 className="hover:bg-muted/50 transition-colors group"
               >
+                <td className="px-4 py-4 text-center">
+                  {tx.status === "success" ? (
+                    <div className="flex justify-center">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    </div>
+                  ) : tx.status === "failed" ? (
+                    <div className="flex justify-center" title={tx.error}>
+                      <XCircle className="w-4 h-4 text-rose-500" />
+                    </div>
+                  ) : (
+                    <div className="flex justify-center">
+                      <div className="w-2 h-2 rounded-full bg-slate-300 animate-pulse" />
+                    </div>
+                  )}
+                </td>
                 <td className="px-4 py-4 max-w-[120px] sm:max-w-none">
                   <div className="flex items-center gap-2">
                     <FileText className="w-4 h-4 text-slate-400 hidden sm:block" />
@@ -57,7 +80,7 @@ const TransactionsList = ({ transactions = [] }: { transactions: any[] }) => {
                 </td>
                 <td className="px-4 py-4 hidden md:table-cell">
                   <span className="px-2 py-1 rounded-md bg-slate-100 text-[10px] font-bold uppercase tracking-wider text-slate-600 border border-slate-200">
-                    {tx.method || "Transfer"}
+                    {tx.method || tx.type || "Transfer"}
                   </span>
                 </td>
                 <td className="px-4 py-4 text-blue-500 font-medium">

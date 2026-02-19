@@ -1,5 +1,6 @@
 import vm from "node:vm";
 import { createLogger } from "../utils/logger.js";
+import { sha256 } from "../utils/crypto.js";
 
 const logger = createLogger("ContractVM");
 
@@ -12,8 +13,8 @@ export class ContractVM {
    * @param {object} ctx  - { sender, value, address, block, storage }
    * @returns {{ ok: boolean, storage?: object, error?: string }}
    */
-  async deploy(code, ctx) {
-    return this._execute(code, null, ctx);
+  async deploy(code, args, ctx) {
+    return this._execute(code, { method: "init", args }, ctx);
   }
 
   /**

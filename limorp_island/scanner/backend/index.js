@@ -20,7 +20,7 @@ const io = new Server(httpServer, {
   },
 });
 
-const RPC_URL = process.env.RPC_URL || "http://localhost:3000";
+const RPC_URL = process.env.RPC_URL || "http://127.0.0.1:3000";
 const WS_RPC_URL = RPC_URL.replace("http", "ws");
 const PORT = process.env.PORT || 4000;
 const DATA_DIR = path.join(process.cwd(), "data_indexer");
@@ -80,11 +80,23 @@ const updateDashboard = async () => {
     for (const b of blocks.slice(0, 5)) {
       if (b.transactions) {
         txs.push(
-          ...b.transactions.map((tx) => ({
-            ...tx,
-            blockHeight: b.index,
-            timestamp: b.timestamp,
-          })),
+          ...b.transactions.map((tx) => {
+            let method = null;
+            if (tx.type === "CALL" && tx.data) {
+              try {
+                const parsed = JSON.parse(tx.data);
+                method = parsed.method;
+              } catch (e) {
+                // Ignore parsing errors
+              }
+            }
+            return {
+              ...tx,
+              method,
+              blockHeight: b.index,
+              timestamp: b.timestamp,
+            };
+          }),
         );
       }
     }
@@ -178,6 +190,95 @@ io.on("connection", (socket) => {
     socket.emit("block-details", block);
   });
 
+  // Handle paginated blocks request
+  socket.on("get-pagination-blocks", async ({ page = 1, limit = 25 }) => {
+    try {
+      const nodeInfo = await callRpc("getNodeInfo");
+      if (!nodeInfo) return;
+
+      const totalHeight = nodeInfo.height;
+      const start = Math.max(0, totalHeight - (page - 1) * limit);
+      const end = Math.max(0, start - limit + 1);
+
+      const blockPromises = [];
+      for (let i = start; i >= end; i--) {
+        blockPromises.push(callRpc("getBlock", [i]));
+      }
+
+      const blocks = (await Promise.all(blockPromises)).filter(Boolean);
+
+      socket.emit("pagination-blocks-res", {
+        blocks,
+        total: totalHeight + 1,
+        page,
+        limit,
+      });
+    } catch (error) {
+      console.error("[Backend] Pagination error:", error.message);
+    }
+  });
+
+  // Handle paginated transactions request
+  socket.on("get-pagination-txs", async ({ page = 1, limit = 25 }) => {
+    try {
+      const nodeInfo = await callRpc("getNodeInfo");
+      if (!nodeInfo) return;
+
+      const latestHeight = nodeInfo.height;
+      const txs = [];
+      let currentHeight = latestHeight;
+      let skipped = 0;
+      const targetSkip = (page - 1) * limit;
+
+      // Scan backwards to find transactions
+      while (txs.length < limit && currentHeight >= 0) {
+        const block = await callRpc("getBlock", [currentHeight]);
+        if (block && block.transactions && block.transactions.length > 0) {
+          const blockTxs = block.transactions
+            .map((tx) => {
+              let method = null;
+              if (tx.type === "CALL" && tx.data) {
+                try {
+                  const parsed = JSON.parse(tx.data);
+                  method = parsed.method;
+                } catch (e) {
+                  // Ignore
+                }
+              }
+              return {
+                ...(tx.toJSON ? tx.toJSON() : tx),
+                method,
+                blockHeight: block.index,
+                timestamp: block.timestamp,
+              };
+            })
+            .reverse();
+
+          for (const tx of blockTxs) {
+            if (skipped < targetSkip) {
+              skipped++;
+              continue;
+            }
+            txs.push(tx);
+            if (txs.length >= limit) break;
+          }
+        }
+        currentHeight--;
+        // Limit scan depth to avoid hanging
+        if (latestHeight - currentHeight > 500) break;
+      }
+
+      socket.emit("pagination-txs-res", {
+        transactions: txs,
+        page,
+        limit,
+        hasMore: currentHeight >= 0,
+      });
+    } catch (error) {
+      console.error("[Backend] Tx Pagination error:", error.message);
+    }
+  });
+
   // Handle specific address requests
   socket.on("get-address-info", async (address) => {
     const normalizedAddress = address.toLowerCase();
@@ -200,6 +301,25 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error(`[Backend] Error fetching address info:`, error.message);
     }
+  });
+
+  // Handle tokens gallery request
+  socket.on("get-tokens", async () => {
+    try {
+      const tokens = await indexer.getTokens();
+      socket.emit("tokens-res", tokens);
+    } catch (error) {
+      console.error("[Backend] Error fetching tokens:", error.message);
+    }
+  });
+
+  // NEW: Manual trigger to re-index from scratch
+  socket.on("super-resync", async () => {
+    console.log("🚨 Super Resync triggered by client! Resetting index to 0...");
+    indexer.lastIndexedBlock = -1;
+    await indexer.sync();
+    const tokens = await indexer.getTokens();
+    socket.emit("tokens-res", tokens);
   });
 });
 

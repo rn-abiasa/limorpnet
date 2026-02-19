@@ -77,12 +77,15 @@ export class P2PServer {
   broadcast(topic, data) {
     if (!this.swarm) return;
 
-    const packet = JSON.stringify({
-      type: "GOSSIP",
-      topic,
-      data,
-      timestamp: Date.now(),
-    });
+    const packet = JSON.stringify(
+      {
+        type: "GOSSIP",
+        topic,
+        data,
+        timestamp: Date.now(),
+      },
+      (k, v) => (typeof v === "bigint" ? v.toString() : v),
+    );
 
     let count = 0;
     for (const socket of this.connections) {
