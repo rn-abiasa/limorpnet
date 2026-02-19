@@ -1,11 +1,8 @@
 import { Block } from "../core/block.js";
 import { Transaction } from "../core/transaction.js";
-import { pipe } from "it-pipe";
-import { fromString as uint8ArrayFromString } from "uint8arrays/from-string";
-import { toString as uint8ArrayToString } from "uint8arrays/to-string";
-import { lpStream } from "it-length-prefixed-stream";
 import { createLogger } from "../utils/logger.js";
 import { MSG_TOPICS } from "./P2PServer.js";
+import crypto from "crypto";
 
 const logger = createLogger("MessageHandler");
 
@@ -15,201 +12,206 @@ export class MessageHandler {
     this.mempool = mempool;
     this.p2p = p2p;
     this.isSyncing = false;
+    this.seenMessages = new Set(); // For gossip deduplication
+  }
+
+  /**
+   * Entry point for new Hyperswarm connections
+   */
+  handleSocket(socket) {
+    let buffer = "";
+
+    socket.on("data", async (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop(); // Keep the last incomplete line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          await this._processMessage(msg, socket);
+        } catch (err) {
+          logger.warn("P2P Message Parse Error", {
+            error: err.message,
+            line: line.slice(0, 50),
+          });
+        }
+      }
+    });
+  }
+
+  async _processMessage(msg, socket) {
+    switch (msg.type) {
+      case "GOSSIP":
+        await this._handleGossip(msg, socket);
+        break;
+      case "SYNC_REQ":
+        await this._handleSyncReq(msg, socket);
+        break;
+      case "SYNC_RES":
+        // Sync results are handled via one-time listeners or specific resolution
+        socket.emit("sync_response", msg.data);
+        break;
+      default:
+        logger.debug("Unknown message type", { type: msg.type });
+    }
+  }
+
+  async _handleGossip(msg, socket) {
+    const msgId = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(msg.data))
+      .digest("hex");
+    if (this.seenMessages.has(msgId)) return;
+    this.seenMessages.add(msgId);
+
+    // Expire old messages from set (keep it small)
+    if (this.seenMessages.size > 1000) {
+      const first = this.seenMessages.values().next().value;
+      this.seenMessages.delete(first);
+    }
+
+    if (msg.topic === MSG_TOPICS.BLOCKS) {
+      await this._handleNewBlock(msg.data);
+    } else if (msg.topic === MSG_TOPICS.TXS) {
+      await this._handleNewTx(msg.data);
+    }
+
+    // Re-flood to other peers (simple flooding)
+    for (const conn of this.p2p.connections) {
+      if (conn !== socket && !conn.destroyed) {
+        conn.write(JSON.stringify(msg) + "\n");
+      }
+    }
   }
 
   async _handleNewBlock(data) {
-    if (this.blockchain.isSyncing) {
-      logger.debug("Ignoring broadcast block during sync", {
-        index: data.index,
-      });
-      return;
-    }
-
+    if (this.blockchain.isSyncing) return;
     try {
       const block = Block.fromJSON(data);
-
-      // Check if we already have this block
       if (this.blockchain.getBlock(block.hash)) return;
 
       const result = await this.blockchain.addBlock(block);
       if (result.ok) {
-        logger.info("New block accepted from gossip", {
-          index: block.index,
-          hash: block.hash,
-        });
+        logger.info("Block accepted from swarm", { index: block.index });
         this.mempool.removeIncluded(block.transactions);
-      } else {
-        logger.warn("Block rejected from gossip", { error: result.error });
-        if (result.error.includes("Chain link mismatch")) {
-          this.triggerSync();
-        }
+      } else if (result.error.includes("Chain link mismatch")) {
+        this.triggerSync();
       }
     } catch (err) {
-      logger.warn("Error handling new block", { error: err.message });
+      logger.warn("Error handling gossip block", { error: err.message });
     }
   }
 
   async _handleNewTx(data) {
-    if (this.blockchain.isSyncing) {
-      return; // Ignore broadcast txs during sync
-    }
-
+    if (this.blockchain.isSyncing) return;
     try {
       const tx = Transaction.fromJSON(data);
-
       if (this.mempool.has(tx.hash)) return;
 
       const result = await this.mempool.addTransaction(tx, (addr) =>
         this.blockchain.stateManager.getAccount(addr),
       );
-
-      if (result.ok) {
-        logger.debug("New tx accepted from gossip", { hash: tx.hash });
-      }
+      if (result.ok) logger.debug("Tx accepted from swarm", { hash: tx.hash });
     } catch (err) {
-      logger.warn("Error handling new tx", { error: err.message });
+      logger.warn("Error handling gossip tx", { error: err.message });
     }
   }
 
   /**
-   * Handle direct stream for block synchronization
+   * Responder for SYNC_REQ
    */
-  async handleSyncStream(stream) {
-    const lp = lpStream(stream);
+  async _handleSyncReq(msg, socket) {
+    const { fromIndex, count } = msg.data;
+    const chainLength = this.blockchain.chain.length;
+    const end = Math.min(fromIndex + count, chainLength);
+    const blocks = [];
 
-    for await (const msgBuffer of lp.source) {
-      try {
-        const msg = JSON.parse(uint8ArrayToString(msgBuffer.subarray()));
-
-        if (msg.type === "REQUEST_BLOCKS") {
-          const { fromIndex, count } = msg.data;
-          const chainLength = this.blockchain.chain.length;
-          const end = Math.min(fromIndex + count, chainLength);
-          const blocks = [];
-          for (let i = fromIndex; i < end; i++) {
-            blocks.push(this.blockchain.chain[i].toJSON());
-          }
-
-          await lp.write(
-            uint8ArrayFromString(
-              JSON.stringify({
-                type: "RESPONSE_BLOCKS",
-                data: { fromIndex, blocks, totalHeight: chainLength - 1 },
-              }),
-            ),
-          );
-        }
-      } catch (err) {
-        logger.warn("Sync stream error", { error: err.message });
-        break;
-      }
+    for (let i = fromIndex; i < end; i++) {
+      blocks.push(this.blockchain.chain[i].toJSON());
     }
+
+    socket.write(
+      JSON.stringify({
+        type: "SYNC_RES",
+        data: { fromIndex, blocks, totalHeight: chainLength - 1 },
+      }) + "\n",
+    );
   }
 
+  /**
+   * Orchestrate sync by rotating through peers
+   */
   async triggerSync() {
     if (this.isSyncing) return;
 
-    const peers = this.p2p.node.getPeers();
-    if (peers.length === 0) {
-      logger.debug("No peers available for sync");
+    if (this.p2p.connections.size === 0) {
+      logger.debug("No peers for sync");
       return;
     }
 
     this.isSyncing = true;
-    logger.info("Starting robust orchestrated sync", {
-      availablePeers: peers.length,
-    });
+    logger.info("Starting sync via Hyperswarm");
 
     try {
-      // Shuffle peers to avoid overloading one
-      const shuffledPeers = [...peers].sort(() => Math.random() - 0.5);
-
+      const peers = Array.from(this.p2p.connections);
       let currentHeight = this.blockchain.getHeight();
       let targetHeight = currentHeight + 1;
 
-      for (const peer of shuffledPeers) {
+      for (const socket of peers) {
         if (currentHeight >= targetHeight && targetHeight > 0) break;
-
-        logger.info(`Attempting sync from peer: ${peer.toString()}`);
-        let stream = null;
+        if (socket.destroyed) continue;
 
         try {
-          stream = await this.p2p.node.dialProtocol(
-            peer,
-            "/limorp/sync/1.0.0",
-            {
-              signal: AbortSignal.timeout(10000), // 10s timeout for dial
-            },
-          );
-
-          const lp = lpStream(stream);
-
           while (currentHeight < targetHeight) {
-            await lp.write(
-              uint8ArrayFromString(
+            const responsePromise = new Promise((resolve) => {
+              const handler = (data) => {
+                socket.removeListener("sync_response", handler);
+                resolve(data);
+              };
+              socket.on("sync_response", handler);
+
+              // Send request
+              socket.write(
                 JSON.stringify({
-                  type: "REQUEST_BLOCKS",
-                  data: { fromIndex: currentHeight + 1, count: 100 },
-                }),
-              ),
-            );
+                  type: "SYNC_REQ",
+                  data: { fromIndex: currentHeight + 1, count: 50 },
+                }) + "\n",
+              );
 
-            // Read with timeout
-            const responseBuffer = await lp.read();
-            if (!responseBuffer) {
-              logger.warn(`Peer ${peer.toString()} closed stream prematurely`);
+              // Timeout for response
+              setTimeout(() => {
+                socket.removeListener("sync_response", handler);
+                resolve(null);
+              }, 10000);
+            });
+
+            const response = await responsePromise;
+            if (!response || !response.blocks || response.blocks.length === 0)
               break;
-            }
 
-            const { data } = JSON.parse(
-              uint8ArrayToString(responseBuffer.subarray()),
+            targetHeight = response.totalHeight;
+            const incomingBlocks = response.blocks.map((b) =>
+              Block.fromJSON(b),
             );
-            const { blocks, totalHeight } = data;
-
-            if (!blocks || blocks.length === 0) {
-              // Peer might be caught up or data missing
-              if (totalHeight > targetHeight) targetHeight = totalHeight;
-              break;
-            }
-
-            targetHeight = totalHeight;
-            const incomingBlocks = blocks.map((b) => Block.fromJSON(b));
             const replaced =
               await this.blockchain.resolveConflict(incomingBlocks);
 
-            if (!replaced) {
-              logger.warn("Failed to apply blocks from peer", {
-                peer: peer.toString(),
-              });
-              break;
-            }
+            if (!replaced) break;
 
             currentHeight = this.blockchain.getHeight();
-            logger.info("Sync progress", {
-              currentHeight,
-              targetHeight,
-              peer: peer.toString().slice(-6),
-            });
+            logger.info("Sync progress", { currentHeight, targetHeight });
           }
         } catch (err) {
-          logger.warn(
-            `Sync failed with peer ${peer.toString()}: ${err.message}`,
-          );
-        } finally {
-          if (stream) {
-            try {
-              await stream.close();
-            } catch (e) {}
-          }
+          logger.warn(`Sync failed with peer: ${err.message}`);
         }
       }
     } catch (err) {
-      logger.error("Global sync process error", { error: err.message });
+      logger.error("Sync process error", { error: err.message });
     } finally {
       this.isSyncing = false;
-      logger.info("Sync process finished", {
-        finalHeight: this.blockchain.getHeight(),
-      });
+      logger.info("Sync finished", { height: this.blockchain.getHeight() });
     }
   }
 }
