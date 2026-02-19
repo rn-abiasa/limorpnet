@@ -5,14 +5,15 @@ import { mplex } from "@libp2p/mplex";
 import { noise } from "@libp2p/noise";
 import { gossipsub } from "@chainsafe/libp2p-gossipsub";
 import { mdns } from "@libp2p/mdns";
+import { bootstrap } from "@libp2p/bootstrap";
 import { kadDHT } from "@libp2p/kad-dht";
 import { identify } from "@libp2p/identify";
 import { ping } from "@libp2p/ping";
+import { multiaddr } from "@multiformats/multiaddr";
 import { fromString as uint8ArrayFromString } from "uint8arrays/from-string";
 import { toString as uint8ArrayToString } from "uint8arrays/to-string";
 import { createLogger } from "../utils/logger.js";
 import { MessageHandler } from "./MessageHandler.js";
-import os from "os";
 
 const logger = createLogger("P2PServer");
 
@@ -22,15 +23,30 @@ export const MSG_TOPICS = {
 };
 
 export class P2PServer {
-  constructor({ blockchain, mempool, port = 6001 }) {
+  constructor({ blockchain, mempool, port = 6001, bootstrapPeers = [] }) {
     this.blockchain = blockchain;
     this.mempool = mempool;
     this.port = port;
+    this.bootstrapPeers = bootstrapPeers;
     this.node = null;
     this.handler = new MessageHandler({ blockchain, mempool, p2p: this });
   }
 
   async start() {
+    const peerDiscovery = [
+      mdns({
+        interval: 20e3,
+      }),
+    ];
+
+    if (this.bootstrapPeers && this.bootstrapPeers.length > 0) {
+      peerDiscovery.push(
+        bootstrap({
+          list: this.bootstrapPeers,
+        }),
+      );
+    }
+
     this.node = await createLibp2p({
       addresses: {
         listen: [
@@ -41,11 +57,7 @@ export class P2PServer {
       transports: [tcp(), webSockets()],
       streamMuxers: [mplex()],
       connectionEncryption: [noise()],
-      peerDiscovery: [
-        mdns({
-          interval: 20e3,
-        }),
-      ],
+      peerDiscovery,
       services: {
         pubsub: gossipsub({
           allowPublishToZeroPeers: true,
@@ -64,6 +76,9 @@ export class P2PServer {
     this.node.addEventListener("peer:discovery", (evt) => {
       const peer = evt.detail;
       logger.info(`Discovered peer: ${peer.id.toString()}`);
+
+      // Auto-connect to discovered peers to speed up networking
+      this.node.dial(peer.id).catch(() => {});
     });
 
     // Handle Connections
@@ -101,6 +116,40 @@ export class P2PServer {
     logger.info("P2P Node started (Libp2p)", {
       id: this.node.peerId.toString(),
       addresses: this.node.getMultiaddrs().map((ma) => ma.toString()),
+    });
+
+    // Initial connection to bootstrap peers
+    for (const addr of this.bootstrapPeers) {
+      this.connectToPeer(addr).catch((err) => {
+        logger.debug(
+          `Failed initial bootstrap connect to ${addr}: ${err.message}`,
+        );
+      });
+    }
+  }
+
+  /**
+   * Manual connection to a peer
+   */
+  async connectToPeer(addr) {
+    if (!this.node) return;
+    try {
+      const ma = multiaddr(addr);
+      await this.node.dial(ma);
+      logger.info(`Manually connected to peer: ${addr}`);
+    } catch (err) {
+      logger.warn(`Failed to connect to peer: ${addr}`, { error: err.message });
+      throw err;
+    }
+  }
+
+  /**
+   * Interface for BlockProducer to trigger sync
+   */
+  requestSync(targetHeight) {
+    logger.info(`Sync requested for height: ${targetHeight}`);
+    this.handler.triggerSync().catch((err) => {
+      logger.error("Failed to trigger sync", { error: err.message });
     });
   }
 

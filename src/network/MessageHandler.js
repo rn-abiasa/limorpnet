@@ -41,7 +41,7 @@ export class MessageHandler {
       } else {
         logger.warn("Block rejected from gossip", { error: result.error });
         if (result.error.includes("Chain link mismatch")) {
-          this._triggerSync();
+          this.triggerSync();
         }
       }
     } catch (err) {
@@ -106,25 +106,26 @@ export class MessageHandler {
     }
   }
 
-  async _triggerSync() {
+  async triggerSync() {
     if (this.isSyncing) return;
     this.isSyncing = true;
 
     logger.info("Starting orchestrated sync via Libp2p streams");
 
+    let stream = null;
     try {
       const peers = this.p2p.node.getPeers();
       if (peers.length === 0) {
+        logger.debug("No peers available for sync");
         this.isSyncing = false;
         return;
       }
 
       // Pick a random peer to sync from
       const peer = peers[Math.floor(Math.random() * peers.length)];
-      const stream = await this.p2p.node.dialProtocol(
-        peer,
-        "/limorp/sync/1.0.0",
-      );
+      logger.info(`Syncing from peer: ${peer.toString()}`);
+
+      stream = await this.p2p.node.dialProtocol(peer, "/limorp/sync/1.0.0");
       const lp = lpStream(stream);
 
       let currentHeight = this.blockchain.getHeight();
@@ -148,6 +149,8 @@ export class MessageHandler {
         );
         const { blocks, totalHeight } = data;
 
+        if (!blocks || blocks.length === 0) break;
+
         targetHeight = totalHeight;
         const incomingBlocks = blocks.map((b) => Block.fromJSON(b));
         const replaced = await this.blockchain.resolveConflict(incomingBlocks);
@@ -157,11 +160,16 @@ export class MessageHandler {
         currentHeight = this.blockchain.getHeight();
         logger.info("Sync progress", { currentHeight, targetHeight });
       }
-
-      stream.close();
     } catch (err) {
       logger.error("Sync failed", { error: err.message });
     } finally {
+      if (stream) {
+        try {
+          await stream.close();
+        } catch (e) {
+          // Ignore close errors
+        }
+      }
       this.isSyncing = false;
     }
   }
