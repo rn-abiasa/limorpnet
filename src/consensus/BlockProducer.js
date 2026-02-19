@@ -1,5 +1,5 @@
 import { Block } from "../core/block.js";
-import { MSG } from "../network/P2PServer.js";
+import { MSG_TOPICS } from "../network/P2PServer.js";
 import { createLogger } from "../utils/logger.js";
 import { PoS } from "./pos.js";
 
@@ -134,7 +134,7 @@ export class BlockProducer {
     this.mempool.removeIncluded(txs);
 
     // Broadcast to peers
-    this.p2p.broadcast(MSG.NEW_BLOCK, block.toJSON());
+    this.p2p.broadcast(MSG_TOPICS.BLOCKS, block.toJSON());
 
     logger.info("Block produced", {
       index: block.index,

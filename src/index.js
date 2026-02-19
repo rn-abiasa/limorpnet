@@ -45,8 +45,7 @@ async function main() {
   // ── P2P Network ───────────────────────────────────────────────────────────
   const p2pPort = parseInt(process.env.P2P_PORT || "6001");
   const p2p = new P2PServer({ blockchain, mempool, port: p2pPort });
-  p2p.start();
-  p2p.connectToInitialPeers();
+  await p2p.start();
 
   // ── RPC Server ────────────────────────────────────────────────────────────
   const rpcPort = parseInt(process.env.RPC_PORT || "3000");

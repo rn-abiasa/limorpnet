@@ -276,8 +276,8 @@ export class RpcServer {
     if (!result.ok) throw new Error(result.error);
 
     // Broadcast to peers
-    const { MSG } = await import("../network/P2PServer.js");
-    this.p2p.broadcast(MSG.NEW_TX, tx.toJSON());
+    const { MSG_TOPICS } = await import("../network/P2PServer.js");
+    this.p2p.broadcast(MSG_TOPICS.TXS, tx.toJSON());
 
     return { hash: tx.hash };
   }

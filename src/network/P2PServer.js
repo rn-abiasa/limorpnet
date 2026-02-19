@@ -1,197 +1,125 @@
-import { WebSocketServer, WebSocket } from "ws";
+import { createLibp2p } from "libp2p";
+import { tcp } from "@libp2p/tcp";
+import { webSockets } from "@libp2p/websockets";
+import { mplex } from "@libp2p/mplex";
+import { noise } from "@libp2p/noise";
+import { gossipsub } from "@chainsafe/libp2p-gossipsub";
+import { mdns } from "@libp2p/mdns";
+import { kadDHT } from "@libp2p/kad-dht";
+import { identify } from "@libp2p/identify";
+import { ping } from "@libp2p/ping";
+import { fromString as uint8ArrayFromString } from "uint8arrays/from-string";
+import { toString as uint8ArrayToString } from "uint8arrays/to-string";
 import { createLogger } from "../utils/logger.js";
 import { MessageHandler } from "./MessageHandler.js";
-import { Bonjour } from "bonjour-service";
 import os from "os";
 
 const logger = createLogger("P2PServer");
-const bonjour = new Bonjour();
 
-export const MSG = {
-  NEW_BLOCK: "NEW_BLOCK",
-  NEW_TX: "NEW_TX",
-  REQUEST_BLOCKS: "REQUEST_BLOCKS",
-  RESPONSE_BLOCKS: "RESPONSE_BLOCKS",
-  NEW_PEER: "NEW_PEER",
-  PING: "PING",
-  PONG: "PONG",
+export const MSG_TOPICS = {
+  BLOCKS: "/limorp/blocks/1.0.0",
+  TXS: "/limorp/txs/1.0.0",
 };
 
 export class P2PServer {
-  /**
-   * @param {object} params
-   * @param {import('../core/Blockchain.js').Blockchain} params.blockchain
-   * @param {import('../core/Mempool.js').Mempool} params.mempool
-   * @param {number} params.port
-   */
   constructor({ blockchain, mempool, port = 6001 }) {
     this.blockchain = blockchain;
     this.mempool = mempool;
     this.port = port;
-    this.peers = new Map(); // url -> WebSocket
-    this.wss = null;
+    this.node = null;
     this.handler = new MessageHandler({ blockchain, mempool, p2p: this });
-    this.localIp = this._getLocalIp();
   }
 
-  _getLocalIp() {
-    const interfaces = os.networkInterfaces();
-    for (const name of Object.keys(interfaces)) {
-      for (const iface of interfaces[name]) {
-        if (iface.family === "IPv4" && !iface.internal) {
-          return iface.address;
-        }
-      }
-    }
-    return "127.0.0.1";
-  }
-
-  start() {
-    this.wss = new WebSocketServer({ port: this.port });
-
-    this.wss.on("connection", (ws, req) => {
-      const ip = req.socket.remoteAddress;
-      logger.info("Peer connected", { ip });
-      this._initSocket(ws);
-      this._requestBlocks(ws, 0, 100);
+  async start() {
+    this.node = await createLibp2p({
+      addresses: {
+        listen: [
+          `/ip4/0.0.0.0/tcp/${this.port}`,
+          `/ip4/0.0.0.0/tcp/${this.port + 100}/ws`,
+        ],
+      },
+      transports: [tcp(), webSockets()],
+      streamMuxers: [mplex()],
+      connectionEncryption: [noise()],
+      peerDiscovery: [
+        mdns({
+          interval: 20e3,
+        }),
+      ],
+      services: {
+        pubsub: gossipsub({
+          allowPublishToZeroPeers: true,
+          emitSelf: false,
+        }),
+        dht: kadDHT({
+          protocol: "/limorp/kad/1.0.0",
+          clientMode: false,
+        }),
+        identify: identify(),
+        ping: ping(),
+      },
     });
 
-    logger.info("P2P server started", { port: this.port, ip: this.localIp });
-    this._startDiscovery();
-  }
-
-  _startDiscovery() {
-    // 1. Publish ourselves
-    bonjour.publish({
-      name: `Limorp-${this.port}-${Math.random().toString(36).slice(2, 7)}`,
-      type: "limorp",
-      port: this.port,
-      txt: { chainId: this.blockchain.genesis.chainId },
+    // Handle Discovery
+    this.node.addEventListener("peer:discovery", (evt) => {
+      const peer = evt.detail;
+      logger.info(`Discovered peer: ${peer.id.toString()}`);
     });
 
-    // 2. Browse for others
-    const browser = bonjour.find({ type: "limorp" });
-    browser.on("up", (service) => {
-      const url = `ws://${service.referer.address}:${service.port}`;
-      if (url !== `ws://${this.localIp}:${this.port}` && !this.peers.has(url)) {
-        logger.info("LAN peer discovered via mDNS", { url });
-        this.connectToPeer(url);
-      }
+    // Handle Connections
+    this.node.addEventListener("peer:connect", (evt) => {
+      const peerId = evt.detail;
+      logger.info(`Connected to peer: ${peerId.toString()}`);
     });
 
-    logger.info("LAN Discovery (mDNS) active");
-  }
+    // Setup PubSub Subscriptions
+    this.node.services.pubsub.subscribe(MSG_TOPICS.BLOCKS);
+    this.node.services.pubsub.subscribe(MSG_TOPICS.TXS);
 
-  /**
-   * Connect to a peer by WebSocket URL
-   */
-  connectToPeer(url) {
-    if (this.peers.has(url)) return;
-
-    const ws = new WebSocket(url);
-
-    ws.on("open", () => {
-      logger.info("Connected to peer", { url });
-      this.peers.set(url, ws);
-      this._initSocket(ws, url);
-      this._requestBlocks(ws, 0, 100);
-      // Announce ourselves to the peer using real LAN IP
-      this._send(ws, MSG.NEW_PEER, {
-        url: `ws://${this.localIp}:${this.port}`,
-      });
-    });
-
-    ws.on("error", (err) => {
-      logger.warn("Peer connection error", { url, error: err.message });
-      this.peers.delete(url);
-    });
-  }
-
-  _initSocket(ws, url = null) {
-    ws.on("message", async (data) => {
+    this.node.services.pubsub.addEventListener("message", async (evt) => {
+      const { topic, data } = evt.detail;
       try {
-        const msg = JSON.parse(data.toString());
-        await this.handler.handle(msg, ws);
-      } catch (err) {
-        logger.warn("Invalid message received", { error: err.message });
-      }
-    });
+        const msg = JSON.parse(uint8ArrayToString(data));
 
-    ws.on("close", () => {
-      if (url) {
-        logger.info("Peer disconnected", { url });
-        this.peers.delete(url);
-        // Attempt reconnect after 10s
-        setTimeout(() => this.connectToPeer(url), 10_000);
-      }
-    });
-
-    ws.on("error", (err) => {
-      logger.warn("Socket error", { error: err.message });
-    });
-
-    // Heartbeat
-    ws._pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        this._send(ws, MSG.PING, {
-          height: this.blockchain.getHeight(),
-          hash: this.blockchain.getLatestBlock().hash,
-        });
-      }
-    }, 30_000);
-
-    ws.on("close", () => clearInterval(ws._pingInterval));
-  }
-
-  /**
-   * Broadcast a message to all connected peers
-   */
-  broadcast(type, data, excludeWs = null) {
-    const msg = JSON.stringify({ type, data });
-
-    // Broadcast to outgoing peers
-    for (const [, ws] of this.peers) {
-      if (ws !== excludeWs && ws.readyState === WebSocket.OPEN) {
-        ws.send(msg);
-      }
-    }
-
-    // Broadcast to incoming peers (wss clients)
-    if (this.wss) {
-      for (const ws of this.wss.clients) {
-        if (ws !== excludeWs && ws.readyState === WebSocket.OPEN) {
-          ws.send(msg);
+        if (topic === MSG_TOPICS.BLOCKS) {
+          await this.handler._handleNewBlock(msg);
+        } else if (topic === MSG_TOPICS.TXS) {
+          await this.handler._handleNewTx(msg);
         }
+      } catch (err) {
+        logger.warn("P2P Message Error", { topic, error: err.message });
       }
-    }
+    });
+
+    // Setup Custom Protocols for Direct Sync
+    this.node.handle("/limorp/sync/1.0.0", async ({ stream }) => {
+      // Direct stream handler for chunked sync
+      this.handler.handleSyncStream(stream);
+    });
+
+    await this.node.start();
+    logger.info("P2P Node started (Libp2p)", {
+      id: this.node.peerId.toString(),
+      addresses: this.node.getMultiaddrs().map((ma) => ma.toString()),
+    });
   }
 
-  _send(ws, type, data) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type, data }));
-    }
-  }
-
-  requestSync(fromIndex) {
-    logger.info("Triggering network sync request", { fromIndex });
-    this.broadcast(MSG.REQUEST_BLOCKS, { fromIndex, count: 100 });
-  }
-
-  _requestBlocks(ws, fromIndex, count = 100) {
-    this._send(ws, MSG.REQUEST_BLOCKS, { fromIndex, count });
-  }
-
-  /**
-   * Connect to initial peers from env
-   */
-  connectToInitialPeers() {
-    const peers = (process.env.PEERS || "").split(",").filter(Boolean);
-    for (const url of peers) {
-      this.connectToPeer(url.trim());
-    }
+  broadcast(topic, data) {
+    if (!this.node) return;
+    const msg = uint8ArrayFromString(JSON.stringify(data));
+    this.node.services.pubsub.publish(topic, msg).catch((err) => {
+      logger.warn("Broadcast error", { topic, error: err.message });
+    });
   }
 
   getPeerCount() {
-    return this.peers.size + (this.wss ? this.wss.clients.size : 0);
+    return this.node ? this.node.getPeers().length : 0;
+  }
+
+  async stop() {
+    if (this.node) {
+      await this.node.stop();
+      logger.info("P2P Node stopped");
+    }
   }
 }
