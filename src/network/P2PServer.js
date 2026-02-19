@@ -30,6 +30,8 @@ export class P2PServer {
     this.bootstrapPeers = bootstrapPeers;
     this.node = null;
     this.handler = new MessageHandler({ blockchain, mempool, p2p: this });
+    this.dialHistory = new Map(); // Track dial attempts for backoff
+    this.startTime = Date.now();
   }
 
   async start() {
@@ -61,30 +63,43 @@ export class P2PServer {
       services: {
         pubsub: gossipsub({
           allowPublishToZeroPeers: true,
+          fallbackToFloodsub: true,
           emitSelf: false,
+          maxInboundStreams: 1024,
+          maxOutboundStreams: 1024,
         }),
         dht: kadDHT({
-          protocol: "/limorp/kad/1.0.0",
+          protocol: "/limorp/lan/kad/1.0.0",
           clientMode: false,
+          allowQueryWithZeroPeers: true,
         }),
         identify: identify(),
         ping: ping(),
+      },
+      connectionGater: {
+        denyDialMultiaddr: async () => false,
       },
     });
 
     // Handle Discovery
     this.node.addEventListener("peer:discovery", (evt) => {
       const peer = evt.detail;
-      logger.info(`Discovered peer: ${peer.id.toString()}`);
+      const peerIdStr = peer.id.toString();
+      logger.debug(`Discovered peer: ${peerIdStr}`);
 
-      // Auto-connect to discovered peers to speed up networking
-      this.node.dial(peer.id).catch(() => {});
+      this._aggressiveDial(peer.id);
     });
 
     // Handle Connections
     this.node.addEventListener("peer:connect", (evt) => {
       const peerId = evt.detail;
-      logger.info(`Connected to peer: ${peerId.toString()}`);
+      logger.info(`✅ Connected to peer: ${peerId.toString()}`);
+      this.dialHistory.delete(peerId.toString()); // Reset backoff on success
+    });
+
+    this.node.addEventListener("peer:disconnect", (evt) => {
+      const peerId = evt.detail;
+      logger.info(`❌ Disconnected from peer: ${peerId.toString()}`);
     });
 
     // Setup PubSub Subscriptions
@@ -129,6 +144,37 @@ export class P2PServer {
   }
 
   /**
+   * Aggressive dialing with exponential backoff
+   */
+  async _aggressiveDial(peerId) {
+    const idStr = peerId.toString();
+    const history = this.dialHistory.get(idStr) || {
+      attempts: 0,
+      lastAttempt: 0,
+    };
+
+    // Check backoff (min 5s, max 60s)
+    const backoff = Math.min(
+      Math.pow(2, history.attempts) * 1000 + 5000,
+      60000,
+    );
+    if (Date.now() - history.lastAttempt < backoff) return;
+
+    try {
+      history.attempts++;
+      history.lastAttempt = Date.now();
+      this.dialHistory.set(idStr, history);
+
+      logger.debug(
+        `Attempting to dial discovered peer: ${idStr} (Attempt ${history.attempts})`,
+      );
+      await this.node.dial(peerId);
+    } catch (err) {
+      logger.debug(`Dial failed for ${idStr}: ${err.message}`);
+    }
+  }
+
+  /**
    * Manual connection to a peer
    */
   async connectToPeer(addr) {
@@ -157,6 +203,11 @@ export class P2PServer {
     if (!this.node) return;
     const msg = uint8ArrayFromString(JSON.stringify(data));
     this.node.services.pubsub.publish(topic, msg).catch((err) => {
+      // Suppress "NoPeersSubscribedToTopic" warning during startup (first 2 mins)
+      const isStartup = Date.now() - this.startTime < 120000;
+      if (err.message.includes("NoPeersSubscribedToTopic") && isStartup) {
+        return;
+      }
       logger.warn("Broadcast error", { topic, error: err.message });
     });
   }

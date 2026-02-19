@@ -108,69 +108,108 @@ export class MessageHandler {
 
   async triggerSync() {
     if (this.isSyncing) return;
+
+    const peers = this.p2p.node.getPeers();
+    if (peers.length === 0) {
+      logger.debug("No peers available for sync");
+      return;
+    }
+
     this.isSyncing = true;
+    logger.info("Starting robust orchestrated sync", {
+      availablePeers: peers.length,
+    });
 
-    logger.info("Starting orchestrated sync via Libp2p streams");
-
-    let stream = null;
     try {
-      const peers = this.p2p.node.getPeers();
-      if (peers.length === 0) {
-        logger.debug("No peers available for sync");
-        this.isSyncing = false;
-        return;
-      }
-
-      // Pick a random peer to sync from
-      const peer = peers[Math.floor(Math.random() * peers.length)];
-      logger.info(`Syncing from peer: ${peer.toString()}`);
-
-      stream = await this.p2p.node.dialProtocol(peer, "/limorp/sync/1.0.0");
-      const lp = lpStream(stream);
+      // Shuffle peers to avoid overloading one
+      const shuffledPeers = [...peers].sort(() => Math.random() - 0.5);
 
       let currentHeight = this.blockchain.getHeight();
       let targetHeight = currentHeight + 1;
 
-      while (currentHeight < targetHeight) {
-        await lp.write(
-          uint8ArrayFromString(
-            JSON.stringify({
-              type: "REQUEST_BLOCKS",
-              data: { fromIndex: currentHeight + 1, count: 100 },
-            }),
-          ),
-        );
+      for (const peer of shuffledPeers) {
+        if (currentHeight >= targetHeight && targetHeight > 0) break;
 
-        const responseBuffer = await lp.read();
-        if (!responseBuffer) break;
+        logger.info(`Attempting sync from peer: ${peer.toString()}`);
+        let stream = null;
 
-        const { data } = JSON.parse(
-          uint8ArrayToString(responseBuffer.subarray()),
-        );
-        const { blocks, totalHeight } = data;
-
-        if (!blocks || blocks.length === 0) break;
-
-        targetHeight = totalHeight;
-        const incomingBlocks = blocks.map((b) => Block.fromJSON(b));
-        const replaced = await this.blockchain.resolveConflict(incomingBlocks);
-
-        if (!replaced) break;
-
-        currentHeight = this.blockchain.getHeight();
-        logger.info("Sync progress", { currentHeight, targetHeight });
-      }
-    } catch (err) {
-      logger.error("Sync failed", { error: err.message });
-    } finally {
-      if (stream) {
         try {
-          await stream.close();
-        } catch (e) {
-          // Ignore close errors
+          stream = await this.p2p.node.dialProtocol(
+            peer,
+            "/limorp/sync/1.0.0",
+            {
+              signal: AbortSignal.timeout(10000), // 10s timeout for dial
+            },
+          );
+
+          const lp = lpStream(stream);
+
+          while (currentHeight < targetHeight) {
+            await lp.write(
+              uint8ArrayFromString(
+                JSON.stringify({
+                  type: "REQUEST_BLOCKS",
+                  data: { fromIndex: currentHeight + 1, count: 100 },
+                }),
+              ),
+            );
+
+            // Read with timeout
+            const responseBuffer = await lp.read();
+            if (!responseBuffer) {
+              logger.warn(`Peer ${peer.toString()} closed stream prematurely`);
+              break;
+            }
+
+            const { data } = JSON.parse(
+              uint8ArrayToString(responseBuffer.subarray()),
+            );
+            const { blocks, totalHeight } = data;
+
+            if (!blocks || blocks.length === 0) {
+              // Peer might be caught up or data missing
+              if (totalHeight > targetHeight) targetHeight = totalHeight;
+              break;
+            }
+
+            targetHeight = totalHeight;
+            const incomingBlocks = blocks.map((b) => Block.fromJSON(b));
+            const replaced =
+              await this.blockchain.resolveConflict(incomingBlocks);
+
+            if (!replaced) {
+              logger.warn("Failed to apply blocks from peer", {
+                peer: peer.toString(),
+              });
+              break;
+            }
+
+            currentHeight = this.blockchain.getHeight();
+            logger.info("Sync progress", {
+              currentHeight,
+              targetHeight,
+              peer: peer.toString().slice(-6),
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            `Sync failed with peer ${peer.toString()}: ${err.message}`,
+          );
+        } finally {
+          if (stream) {
+            try {
+              await stream.close();
+            } catch (e) {}
+          }
         }
       }
+    } catch (err) {
+      logger.error("Global sync process error", { error: err.message });
+    } finally {
       this.isSyncing = false;
+      logger.info("Sync process finished", {
+        finalHeight: this.blockchain.getHeight(),
+      });
     }
   }
 }
