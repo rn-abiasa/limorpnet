@@ -4,3 +4,6 @@ data/
 *.log
 docs
 node2
+scripts
+limorp_island
+config

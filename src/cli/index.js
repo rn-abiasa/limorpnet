@@ -4,9 +4,9 @@ import { createInterface } from "readline";
 import { existsSync, mkdirSync } from "fs";
 import { resolve } from "path";
 
-import { Wallet } from "../src/wallet/Wallet.js";
-import { KeyStore } from "../src/wallet/KeyStore.js";
-import { Transaction, TX_TYPE } from "../src/core/transaction.js";
+import { Wallet } from "../wallet/Wallet.js";
+import { KeyStore } from "../wallet/KeyStore.js";
+import { Transaction, TX_TYPE } from "../core/transaction.js";
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 const ask = (q) => new Promise((res) => rl.question(q, res));

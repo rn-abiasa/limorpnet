@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "cli": "node cli/index.js",
+    "cli": "node src/cli/index.js",
     "scanner:backend": "cd limorp_island/scanner/backend && node index.js"
   },
   "author": "abiasa",
