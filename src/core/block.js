@@ -1,4 +1,5 @@
 import { sha256, serialize } from "../utils/crypto.js";
+import { Transaction } from "./transaction.js";
 import pkg from "elliptic";
 const { ec: EC } = pkg;
 
@@ -13,6 +14,8 @@ export class Block {
    * @param {string} params.validator        - validator address
    * @param {number} params.timestamp
    * @param {string} params.stateRoot        - hash of state after applying block
+   * @param {bigint} params.baseFee          - EIP-1559 base fee (limo)
+   * @param {bigint} params.gasUsed          - total gas consumed in block
    */
   constructor({
     index,
@@ -21,13 +24,19 @@ export class Block {
     validator,
     timestamp = Date.now(),
     stateRoot = "",
+    baseFee = 0n,
+    gasUsed = 0n,
   }) {
     this.index = index;
     this.previousHash = previousHash;
-    this.transactions = transactions;
+    this.transactions = (transactions || []).map((tx) =>
+      tx instanceof Transaction ? tx : Transaction.fromJSON(tx),
+    );
     this.validator = validator;
     this.timestamp = timestamp;
     this.stateRoot = stateRoot;
+    this.baseFee = BigInt(baseFee);
+    this.gasUsed = BigInt(gasUsed);
     this.signature = null;
     this.hash = this._calculateHash();
   }
@@ -41,6 +50,8 @@ export class Block {
         validator: this.validator,
         timestamp: this.timestamp,
         stateRoot: this.stateRoot,
+        baseFee: this.baseFee.toString(),
+        gasUsed: this.gasUsed.toString(),
       }),
     );
   }
@@ -108,6 +119,8 @@ export class Block {
       validator: this.validator,
       timestamp: this.timestamp,
       stateRoot: this.stateRoot,
+      baseFee: this.baseFee.toString(),
+      gasUsed: this.gasUsed.toString(),
       signature: this.signature,
     };
   }
@@ -116,10 +129,14 @@ export class Block {
     const block = new Block({
       index: obj.index,
       previousHash: obj.previousHash,
-      transactions: obj.transactions ?? [],
+      transactions: (obj.transactions ?? []).map((t) =>
+        typeof t === "string" ? t : Transaction.fromJSON(t),
+      ),
       validator: obj.validator,
       timestamp: obj.timestamp,
       stateRoot: obj.stateRoot ?? "",
+      baseFee: BigInt(obj.baseFee || "0"),
+      gasUsed: BigInt(obj.gasUsed || "0"),
     });
     block.hash = obj.hash;
     block.signature = obj.signature;
@@ -138,6 +155,8 @@ export function createGenesisBlock(genesisConfig) {
     validator: "genesis",
     timestamp: genesisConfig.timestamp || 0,
     stateRoot: genesisConfig.stateRoot || "",
+    baseFee: BigInt(genesisConfig.params.initialBaseFee || "1000"),
+    gasUsed: 0n,
   });
   return block;
 }

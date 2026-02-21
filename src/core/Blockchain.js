@@ -27,9 +27,18 @@ export class Blockchain extends EventEmitter {
     if (stored === null) {
       // First run — create genesis block
       const genesisBlock = createGenesisBlock(this.genesis);
+      const root = await this.stateManager.applyGenesis(
+        this.genesis.initialState,
+      );
+      genesisBlock.stateRoot = root;
+      // Recalculate hash because stateRoot changed
+      genesisBlock.hash = genesisBlock._calculateHash();
+
       await this._saveBlock(genesisBlock);
-      await this.stateManager.applyGenesis(this.genesis.initialState);
-      logger.info("Genesis block created", { hash: genesisBlock.hash });
+      logger.info("Genesis block created", {
+        hash: genesisBlock.hash,
+        stateRoot: root,
+      });
     } else {
       // Load chain from DB
       const height = parseInt(stored);
@@ -81,6 +90,34 @@ export class Blockchain extends EventEmitter {
       return { ok: false, error: result.error };
     }
 
+    // VERIFY STATE ROOT
+    if (block.stateRoot && result.stateRoot !== block.stateRoot) {
+      logger.error("State root mismatch!", {
+        block: block.index,
+        expected: block.stateRoot,
+        calculated: result.stateRoot,
+      });
+      return {
+        ok: false,
+        error: `State root mismatch: expected ${block.stateRoot}, got ${result.stateRoot}`,
+      };
+    }
+
+    // VERIFY BLOCK GAS LIMIT
+    const maxGas = this.genesis.params.maxGasPerBlock;
+    if (block.gasUsed > maxGas) {
+      return {
+        ok: false,
+        error: `Block gas used (${block.gasUsed}) exceeds limit (${maxGas})`,
+      };
+    }
+
+    // Capture calculated stateRoot if it wasn't already set (e.g. locally produced block)
+    if (!block.stateRoot) {
+      block.stateRoot = result.stateRoot;
+      block.hash = block._calculateHash();
+    }
+
     await this._saveBlock(block);
     this.emit("block:new", block);
 
@@ -91,14 +128,40 @@ export class Blockchain extends EventEmitter {
         logger.info(`Sync in progress: Block ${block.index} added`);
       }
     } else {
-      logger.info(`Block added: #${block.index}`);
-      logger.debug("Block details", {
-        hash: block.hash,
-        txCount: block.transactions.length,
+      logger.info(`Block added: #${block.index}`, {
+        gasUsed: block.gasUsed.toString(),
+        baseFee: block.baseFee.toString(),
       });
     }
 
     return { ok: true };
+  }
+
+  /**
+   * Calculate base fee for the next block based on current block fullness.
+   * Logic: 12.5% max change per block (EIP-1559 standard)
+   * @param {Block} parentBlock
+   */
+  calculateNextBaseFee(parentBlock) {
+    const targetGas = BigInt(this.genesis.params.targetGasPerBlock);
+    const parentGasUsed = parentBlock.gasUsed;
+    const parentBaseFee = parentBlock.baseFee;
+
+    if (parentGasUsed === targetGas) {
+      return parentBaseFee;
+    }
+
+    if (parentGasUsed > targetGas) {
+      const gasDelta = parentGasUsed - targetGas;
+      const feeDelta = (parentBaseFee * gasDelta) / targetGas / 8n;
+      return parentBaseFee + (feeDelta > 0n ? feeDelta : 1n);
+    } else {
+      const gasDelta = targetGas - parentGasUsed;
+      const feeDelta = (parentBaseFee * gasDelta) / targetGas / 8n;
+      const nextFee = parentBaseFee - feeDelta;
+      const minFee = BigInt(this.genesis.params.initialBaseFee || "1000");
+      return nextFee > minFee ? nextFee : minFee;
+    }
   }
 
   /**

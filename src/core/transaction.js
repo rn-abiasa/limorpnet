@@ -24,7 +24,9 @@ export class Transaction {
    * @param {number} params.nonce     - sender nonce
    * @param {string} params.type      - TX_TYPE
    * @param {string} params.data      - contract bytecode or calldata (hex string or JSON)
-   * @param {bigint} params.fee       - transaction fee
+   * @param {bigint} params.gasLimit             - maximum gas to use
+   * @param {bigint} params.maxFeePerGas         - maximum total fee per gas (limo)
+   * @param {bigint} params.maxPriorityFeePerGas  - maximum tip for validator (limo)
    * @param {number} params.timestamp
    */
   constructor({
@@ -34,7 +36,9 @@ export class Transaction {
     nonce,
     type = TX_TYPE.TRANSFER,
     data = "",
-    fee = 0n,
+    gasLimit = 21000n,
+    maxFeePerGas = 1000n,
+    maxPriorityFeePerGas = 100n,
     timestamp = Date.now(),
   }) {
     this.from = from;
@@ -43,10 +47,16 @@ export class Transaction {
     this.nonce = nonce;
     this.type = type;
     this.data = data;
-    this.fee = BigInt(fee);
+    this.gasLimit = BigInt(gasLimit);
+    this.maxFeePerGas = BigInt(maxFeePerGas);
+    this.maxPriorityFeePerGas = BigInt(maxPriorityFeePerGas);
     this.timestamp = timestamp;
     this.signature = null;
     this.hash = this._calculateHash();
+  }
+
+  get fee() {
+    return this.gasLimit * this.maxFeePerGas;
   }
 
   _calculateHash() {
@@ -58,7 +68,9 @@ export class Transaction {
         nonce: this.nonce,
         type: this.type,
         data: this.data,
-        fee: this.fee.toString(),
+        gasLimit: this.gasLimit.toString(),
+        maxFeePerGas: this.maxFeePerGas.toString(),
+        maxPriorityFeePerGas: this.maxPriorityFeePerGas.toString(),
         timestamp: this.timestamp,
       }),
     );
@@ -71,7 +83,14 @@ export class Transaction {
     const keyPair = ec.keyFromPrivate(privateKeyHex, "hex");
     const msgHash = this._calculateHash();
     const sig = keyPair.sign(msgHash);
-    this.signature = sig.toDER("hex");
+    const pubKey = keyPair.getPublic("hex");
+    this.signature = Buffer.from(
+      JSON.stringify({
+        r: sig.r.toString("hex"),
+        s: sig.s.toString("hex"),
+        pubKey,
+      }),
+    ).toString("hex");
     this.hash = msgHash;
     return this;
   }
@@ -99,7 +118,8 @@ export class Transaction {
    */
   isValid() {
     if (!this.from || !this.hash) return false;
-    if (this.amount < 0n || this.fee < 0n) return false;
+    if (this.amount < 0n || this.gasLimit < 21000n) return false;
+    if (this.maxFeePerGas < 0n || this.maxPriorityFeePerGas < 0n) return false;
     if (this.type === TX_TYPE.TRANSFER && !this.to) return false;
     if (this.hash !== this._calculateHash()) return false;
     return true;
@@ -114,7 +134,9 @@ export class Transaction {
       nonce: this.nonce,
       type: this.type,
       data: this.data,
-      fee: this.fee.toString(),
+      gasLimit: this.gasLimit.toString(),
+      maxFeePerGas: this.maxFeePerGas.toString(),
+      maxPriorityFeePerGas: this.maxPriorityFeePerGas.toString(),
       timestamp: this.timestamp,
       signature: this.signature,
     };
@@ -128,11 +150,15 @@ export class Transaction {
       nonce: obj.nonce,
       type: obj.type,
       data: obj.data,
-      fee: BigInt(obj.fee),
+      gasLimit: obj.gasLimit ? BigInt(obj.gasLimit) : undefined,
+      maxFeePerGas: obj.maxFeePerGas ? BigInt(obj.maxFeePerGas) : undefined,
+      maxPriorityFeePerGas: obj.maxPriorityFeePerGas
+        ? BigInt(obj.maxPriorityFeePerGas)
+        : undefined,
       timestamp: obj.timestamp,
     });
     tx.signature = obj.signature;
-    tx.hash = obj.hash;
+    if (obj.hash) tx.hash = obj.hash;
     return tx;
   }
 }

@@ -19,7 +19,7 @@ export const genesis = {
   // ── Chain Parameters ──────────────────────────────────────────────────────
   params: {
     blockTime: 5000, // 5 seconds per block
-    minStake: (10n * LMR).toString(), // 10 LMR minimum to be validator
+    minStake: (100000n * LMR).toString(), // 10 LMR minimum to be validator
 
     // Block reward schedule (decay every N blocks)
     initialBlockReward: (5000n * LMR).toString(), // 10 LMR/block at start
@@ -27,11 +27,13 @@ export const genesis = {
     rewardDecayFactor: 0.8, // multiply by 0.8 every decay period (20% reduction)
     minBlockReward: ((1n * LMR) / 10n).toString(), // 0.1 LMR minimum reward (never 0)
 
-    // Fee distribution
-    feeBurnPercent: 50, // 50% of tx fee is burned
-    // remaining 50% goes to block validator
+    // Fee distribution (EIP-1559 style)
+    feeBurnPercent: 100, // 100% of BASE FEE is burned (Standard)
+    initialBaseFee: 1_000n.toString(), // 1000 limo minimum
+    targetGasPerBlock: 15_000_000,
+    maxGasPerBlock: 30_000_000,
 
-    maxTxPerBlock: 200,
+    maxTxPerBlock: 1000, // Increased as we now use gas limits
   },
 
   // ── Genesis Pre-allocation ────────────────────────────────────────────────
@@ -52,7 +54,7 @@ export const genesis = {
     // ── Foundation / Treasury ────────────────────────────────────────────
     // For ecosystem grants, development, marketing
     "0x5391a081143d2ae3ad6c39e204f49888366cc2da": {
-      balance: (15_000_000n * LMR).toString(), // 5,000,000 LMR
+      balance: (5_000_000n * LMR).toString(), // 5,000,000 LMR
       stake: "0",
     },
     // 'YOUR_TREASURY_ADDRESS': {

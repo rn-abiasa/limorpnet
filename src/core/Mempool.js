@@ -68,13 +68,18 @@ export class Mempool extends EventEmitter {
    * @returns {Transaction[]}
    */
   getTransactionsForBlock(limit = 200) {
-    return [...this.pending.values()]
+    console.log(
+      `[Mempool] Getting txs for block. Pending count: ${this.pending.size}`,
+    );
+    const txs = [...this.pending.values()]
       .sort((a, b) => {
         const feeDiff = Number(b.fee - a.fee);
         if (feeDiff !== 0) return feeDiff;
         return a.nonce - b.nonce;
       })
       .slice(0, limit);
+    console.log(`[Mempool] Returning ${txs.length} transactions`);
+    return txs;
   }
 
   /**

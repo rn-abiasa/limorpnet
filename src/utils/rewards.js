@@ -32,15 +32,3 @@ export function calculateBlockReward(blockHeight) {
 
   return reward > minReward ? reward : minReward;
 }
-
-/**
- * Split fee into burned and validator portions.
- * @param {bigint} totalFee
- * @returns {{ burned: bigint, toValidator: bigint }}
- */
-export function splitFee(totalFee) {
-  const burnPercent = BigInt(params.feeBurnPercent); // 50
-  const burned = (totalFee * burnPercent) / 100n;
-  const toValidator = totalFee - burned;
-  return { burned, toValidator };
-}

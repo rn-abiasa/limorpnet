@@ -1,8 +1,9 @@
 import { EventEmitter } from "events";
 import { sha256, serialize } from "../utils/crypto.js";
+import { StateTree } from "./StateTree.js";
 import { TX_TYPE } from "../core/transaction.js";
 import { createLogger } from "../utils/logger.js";
-import { calculateBlockReward, splitFee } from "../utils/rewards.js";
+import { calculateBlockReward } from "../utils/rewards.js";
 
 const logger = createLogger("StateManager");
 
@@ -81,8 +82,14 @@ export class StateManager extends EventEmitter {
         code: null,
         storage: {},
         stake: BigInt(data.stake || "0"),
+        mined: 0n, // Ensure mined is initialized for new accounts
       });
     }
+
+    // Calculate and save the stateRoot
+    const allAccounts = await this.getAllAccounts();
+    const root = StateTree.calculateRoot(allAccounts);
+    await this.db.put("state:root", root);
 
     let supply = 0n;
     for (const data of Object.values(initialState)) {
@@ -90,7 +97,25 @@ export class StateManager extends EventEmitter {
       supply += BigInt(data.stake || "0");
     }
     await this.db.put("state:totalSupply", supply.toString());
-    logger.info("Total supply initialized", { supply: supply.toString() });
+    logger.info("Total supply initialized", {
+      supply: supply.toString(),
+      stateRoot: root,
+    });
+    return root;
+  }
+
+  async getAllAccounts() {
+    const accounts = new Map();
+    for await (const { key, value } of this.db.iterate("state:account:")) {
+      const address = key.replace("state:account:", "");
+      const acc = JSON.parse(value);
+      // Ensure BigInts are correct for hashing consistency
+      acc.balance = BigInt(acc.balance);
+      acc.stake = BigInt(acc.stake || "0");
+      acc.mined = BigInt(acc.mined || "0");
+      accounts.set(address, acc);
+    }
+    return accounts;
   }
 
   // ─── Block Application ──────────────────────────────────────────────────────
@@ -109,7 +134,9 @@ export class StateManager extends EventEmitter {
       return this.getOrCreateAccount(addr);
     };
 
-    let totalFees = 0n;
+    let blockGasUsed = 0n;
+    let totalPriorityRewards = 0n;
+    let totalBaseFeeBurned = 0n;
 
     const events = [];
     const receipts = [];
@@ -117,6 +144,16 @@ export class StateManager extends EventEmitter {
     for (const txData of block.transactions) {
       // Per-transaction event collection for the receipt
       const beforeEventsLen = events.length;
+
+      // Validate baseFee requirement
+      if (txData.maxFeePerGas < block.baseFee) {
+        logger.warn("Tx rejected: maxFeePerGas < baseFee", {
+          hash: txData.hash,
+          maxFee: txData.maxFeePerGas.toString(),
+          baseFee: block.baseFee.toString(),
+        });
+        continue;
+      }
 
       const result = await this._applyTx(
         txData,
@@ -126,10 +163,29 @@ export class StateManager extends EventEmitter {
         events,
       );
 
+      // Gas accounting
+      const gasUsed = result.gasUsed || 21000n;
+      blockGasUsed += gasUsed;
+
+      // EIP-1559 Fee Distribution
+      const priorityFee =
+        txData.maxFeePerGas - block.baseFee > txData.maxPriorityFeePerGas
+          ? txData.maxPriorityFeePerGas
+          : txData.maxFeePerGas - block.baseFee;
+
+      const priorityReward = gasUsed * priorityFee;
+      const baseFeeBurn = gasUsed * block.baseFee;
+
+      totalPriorityRewards += priorityReward;
+      totalBaseFeeBurned += baseFeeBurn;
+
       // Construct Receipt
       const receipt = {
         txHash: txData.hash,
         status: result.ok ? 1 : 0,
+        gasUsed: gasUsed.toString(),
+        baseFee: block.baseFee.toString(),
+        priorityFee: priorityFee.toString(),
         contractAddress: txData._contractAddress || null,
         logs: events.slice(beforeEventsLen).map((e) => ({
           event: e.event,
@@ -142,35 +198,28 @@ export class StateManager extends EventEmitter {
       };
       receipts.push(receipt);
 
-      if (!result.ok) {
-        logger.warn("Tx failed in block (Receipt stored)", {
-          hash: txData.hash,
-          error: result.error,
-        });
-        // We DO NOT 'continue' here anymore if the fee was taken
-        // In _applyTx, if nonce/balance is wrong, it returns early and fee isn't taken.
-        // If VM fails, fee is taken and it returns {ok:false}.
-      }
-
-      totalFees += BigInt(txData.fee || 0);
+      // If VM fails, fee is taken and it returns {ok:false}.
     }
+
+    // Set final gasUsed in block
+    block.gasUsed = blockGasUsed;
 
     // Hitung reward dan distribusi fee
     const blockReward = calculateBlockReward(block.index);
-    const { toValidator } = splitFee(totalFees);
 
-    // Berikan reward + porsi fee ke validator
+    // Berikan block reward + total priority fees ke validator
     const validatorAcc = await getAcc(block.validator);
-    const totalReward = blockReward + toValidator;
+    const totalReward = blockReward + totalPriorityRewards;
     validatorAcc.balance += totalReward;
     validatorAcc.mined = (validatorAcc.mined || 0n) + totalReward;
     changes.set(block.validator, validatorAcc);
 
-    logger.debug("Block tokenomics applied", {
+    logger.debug("Block tokenomics applied (LMR-1559)", {
       index: block.index,
       reward: blockReward.toString(),
-      feesCollected: totalFees.toString(),
-      feesBurned: (totalFees - toValidator).toString(),
+      priorityRewards: totalPriorityRewards.toString(),
+      burnedBaseFee: totalBaseFeeBurned.toString(),
+      gasUsed: blockGasUsed.toString(),
     });
 
     // Persist all changes in one batch
@@ -194,10 +243,9 @@ export class StateManager extends EventEmitter {
     }
 
     // Update Total Supply
-    // Supply = Old + Reward - BurnedFees
+    // Supply = Old + Reward - totalBaseFeeBurned
     let currentSupply = await this.getTotalSupply();
-    const burnedFees = totalFees - toValidator;
-    currentSupply = currentSupply + blockReward - burnedFees;
+    currentSupply = currentSupply + blockReward - totalBaseFeeBurned;
 
     ops.push({
       type: "put",
@@ -235,12 +283,17 @@ export class StateManager extends EventEmitter {
 
     await this.db.batch(ops);
 
+    // After batching, recalculate global stateRoot
+    const allAccounts = await this.getAllAccounts();
+    const stateRoot = StateTree.calculateRoot(allAccounts);
+    await this.db.put("state:root", stateRoot);
+
     // Emit events for WebSocket subscribers
     for (const e of events) {
       this.emit("event:new", { ...e, blockIndex: block.index });
     }
 
-    return { ok: true };
+    return { ok: true, stateRoot };
   }
 
   async _applyTx(txData, getAcc, changes, block, events) {
@@ -254,66 +307,61 @@ export class StateManager extends EventEmitter {
       };
     }
 
-    const totalCost = BigInt(txData.amount) + BigInt(txData.fee);
-    if (from.balance < totalCost) {
-      return { ok: false, error: "Insufficient balance" };
+    // Gas limit MUST at least cover transfer
+    const gasLimit = BigInt(txData.gasLimit || 21000n);
+    const maxFee = BigInt(txData.maxFeePerGas || 0n);
+
+    const maxTxCost = BigInt(txData.amount) + gasLimit * maxFee;
+    if (from.balance < maxTxCost) {
+      return {
+        ok: false,
+        error: "Insufficient balance to cover amount + max gas fee",
+      };
     }
 
-    // Deduct from sender
-    from.balance -= totalCost;
+    // Charge the MAXIMUM possible fee upfront (for simplicity)
+    // In production, you'd only charge effectivePrice * gasUsed at the end.
+    // For Limorp, we charge the effective price now.
+    const priorityFee =
+      txData.maxFeePerGas - block.baseFee > txData.maxPriorityFeePerGas
+        ? txData.maxPriorityFeePerGas
+        : txData.maxFeePerGas - block.baseFee;
+    const effectivePrice = block.baseFee + priorityFee;
+
+    // Fixed gas for simple TXs
+    let gasUsed = 21000n;
+
+    // Deduct from sender upfront.
+    // We increment nonce and save sender state immediately to prevent double spending even on VM failure.
     from.nonce += 1;
     changes.set(txData.from, from);
 
     switch (txData.type) {
       case TX_TYPE.TRANSFER: {
         const to = await getAcc(txData.to);
+        const actualFee = gasUsed * effectivePrice;
+        from.balance -= BigInt(txData.amount) + actualFee;
         to.balance += BigInt(txData.amount);
         changes.set(txData.to, to);
-        return { ok: true };
+        return { ok: true, gasUsed };
       }
 
       case TX_TYPE.DEPLOY: {
-        const contractAddress = this._deriveContractAddress(
+        const result = await this._executeDeploy(
           txData.from,
+          txData.amount,
+          txData.data,
           txData.nonce,
+          block,
+          getAcc,
+          changes,
+          gasLimit - 21000n,
+          effectivePrice,
         );
-
-        let code = txData.data;
-        let args = [];
-
-        try {
-          // If data is JSON, try to extract code and args (modern format)
-          if (txData.data.trim().startsWith("{")) {
-            const parsed = JSON.parse(txData.data);
-            if (parsed.code) {
-              code = parsed.code;
-              args = parsed.args || [];
-            }
-          }
-        } catch (e) {
-          // Fallback to raw code
-        }
-
-        const contract = await getAcc(contractAddress);
-        contract.code = code;
-        contract.storage = {};
-
-        // Run constructor
-        const vmResult = await this.contractVM.deploy(code, args, {
-          sender: txData.from,
-          value: BigInt(txData.amount),
-          address: contractAddress,
-          block: { number: block.index, timestamp: block.timestamp },
-          storage: contract.storage,
-        });
-
-        if (!vmResult.ok) return { ok: false, error: vmResult.error };
-        contract.storage = vmResult.storage;
-        changes.set(contractAddress, contract);
-
-        // Return contract address in a way callers can read
-        txData._contractAddress = contractAddress;
-        return { ok: true };
+        gasUsed += BigInt(result.gasUsed || 0);
+        if (!result.ok) return { ok: false, error: result.error, gasUsed };
+        txData._contractAddress = result.contractAddress;
+        return { ok: true, gasUsed };
       }
 
       case TX_TYPE.CALL: {
@@ -327,10 +375,17 @@ export class StateManager extends EventEmitter {
           changes,
           events,
           txData.hash,
+          gasLimit - 21000n,
+          effectivePrice,
         );
 
-        if (!vmResult.ok) return { ok: false, error: vmResult.error };
-        return { ok: true };
+        gasUsed += BigInt(vmResult.gasUsed || 0);
+        const actualFee = gasUsed * effectivePrice;
+        from.balance -= BigInt(txData.amount) + actualFee;
+        changes.set(txData.from, from);
+
+        if (!vmResult.ok) return { ok: false, error: vmResult.error, gasUsed };
+        return { ok: true, gasUsed };
       }
 
       case TX_TYPE.STAKE: {
@@ -366,11 +421,15 @@ export class StateManager extends EventEmitter {
     changes,
     allEvents,
     txHash,
+    gasLimit,
+    effectivePrice,
   ) {
     const contract = await getAcc(target);
-    if (!contract.code) return { ok: false, error: "Not a contract" };
+    if (!contract.code)
+      return { ok: false, error: "Not a contract", gasUsed: 0n };
 
     const contractEvents = [];
+    // console.log(`[DEBUG] _executeCall START target=${target} storage=`, contract.storage);
     const vmResult = await this.contractVM.call(contract.code, data, {
       sender,
       value: BigInt(value),
@@ -378,10 +437,29 @@ export class StateManager extends EventEmitter {
       block: { number: block.index, timestamp: block.timestamp },
       storage: contract.storage,
       events: contractEvents,
-      call: async (subTarget, subMethod, subArgs, subValue) => {
+      gasLimit: BigInt(gasLimit),
+      deploy: async (code, args, value, deployGasLimit) => {
+        const fromAcc = await getAcc(target);
+        const deployNonce = fromAcc.nonce;
+        fromAcc.nonce += 1;
+        changes.set(target, fromAcc);
+
+        return this._executeDeploy(
+          target,
+          value,
+          JSON.stringify({ code, args }),
+          deployNonce,
+          block,
+          getAcc,
+          changes,
+          deployGasLimit,
+          effectivePrice,
+        );
+      },
+      call: async (subTarget, subMethod, subArgs, subValue, subGasLimit) => {
         return this._executeCall(
           subTarget,
-          target, // Current contract is the sender
+          target,
           subValue,
           { method: subMethod, args: subArgs },
           block,
@@ -389,6 +467,8 @@ export class StateManager extends EventEmitter {
           changes,
           allEvents,
           txHash,
+          subGasLimit,
+          effectivePrice,
         );
       },
     });
@@ -414,6 +494,70 @@ export class StateManager extends EventEmitter {
     }
 
     return vmResult;
+  }
+
+  async _executeDeploy(
+    sender,
+    value,
+    data,
+    nonce,
+    block,
+    getAcc,
+    changes,
+    gasLimit,
+    effectivePrice,
+  ) {
+    const contractAddress = this._deriveContractAddress(sender, nonce);
+
+    let code = data;
+    let args = [];
+
+    try {
+      if (data.trim().startsWith("{")) {
+        const parsed = JSON.parse(data);
+        if (parsed.code) {
+          code = parsed.code;
+          args = parsed.args || [];
+        }
+      }
+    } catch (e) {}
+
+    let contract = await getAcc(contractAddress);
+    if (!contract) {
+      contract = {
+        balance: 0n,
+        nonce: 0,
+        code: null,
+        storage: {},
+        stake: 0n,
+        mined: 0n,
+      };
+    }
+    contract.code = code;
+    contract.storage = {};
+
+    const vmResult = await this.contractVM.deploy(code, args, {
+      sender,
+      value: BigInt(value),
+      address: contractAddress,
+      block: { number: block.index, timestamp: block.timestamp },
+      storage: contract.storage,
+      gasLimit: BigInt(gasLimit),
+    });
+
+    const gasUsed = vmResult.gasUsed || 0n;
+    const totalCost = BigInt(value) + gasUsed * effectivePrice;
+
+    const fromAcc = await getAcc(sender);
+    fromAcc.balance -= totalCost;
+    changes.set(sender, fromAcc);
+
+    if (!vmResult.ok) return { ok: false, error: vmResult.error, gasUsed };
+
+    contract.storage = vmResult.storage;
+    changes.set(contractAddress, contract);
+
+    return { ok: true, contractAddress, gasUsed };
   }
 
   _deriveContractAddress(from, nonce) {

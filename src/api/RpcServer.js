@@ -77,7 +77,10 @@ export class RpcServer {
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Origin, X-Requested-With, Content-Type, Accept, Authorization",
+      );
 
       if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -225,6 +228,13 @@ export class RpcServer {
 
       case "getEvents":
         return this._getEvents(params[0]);
+
+      case "callContract":
+      case "callReadOnly":
+        return this._callContract(params[0], params[1], params[2]);
+
+      case "getTokenBalance":
+        return this._getTokenBalance(params[0], params[1]);
 
       default:
         throw new Error(`Unknown method: ${method}`);
@@ -435,5 +445,44 @@ export class RpcServer {
       events.push(data);
     }
     return events;
+  }
+
+  async _callContract(target, methodOrCallData, args = []) {
+    const account = await this.blockchain.stateManager.getAccount(
+      target.toLowerCase(),
+    );
+    if (!account || !account.code) throw new Error("Contract not found");
+
+    let method = methodOrCallData;
+    let callArgs = args;
+
+    if (typeof methodOrCallData === "object") {
+      method = methodOrCallData.method;
+      callArgs = methodOrCallData.args || [];
+    }
+
+    const latestBlock = this.blockchain.getLatestBlock();
+    const result = await this.blockchain.stateManager.contractVM.call(
+      account.code,
+      JSON.stringify({ method, args: callArgs }),
+      {
+        sender: "0x0000000000000000000000000000000000000000",
+        value: 0n,
+        address: target,
+        block: {
+          number: latestBlock.index,
+          timestamp: latestBlock.timestamp,
+        },
+        storage: account.storage,
+        gasLimit: 10000000n,
+      },
+    );
+
+    if (!result.ok) throw new Error(result.error);
+    return result.result;
+  }
+
+  async _getTokenBalance(tokenAddr, userAddr) {
+    return this._callContract(tokenAddr, "balanceOf", [userAddr]);
   }
 }
