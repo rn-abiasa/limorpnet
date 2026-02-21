@@ -119,10 +119,14 @@ export class BlockProducer {
       stateRoot: "", // Will be filled after execution
     });
 
-    // 2. Execute block locally to get stateRoot BEFORE signing
-    const executionResult = await this.stateManager.applyBlock(block);
+    // 2. Execute block locally (simulated) to get stateRoot BEFORE signing
+    // This mode DOES NOT write to DB.
+    const executionResult = await this.stateManager.applyBlock(block, {
+      commit: false,
+    });
+
     if (!executionResult.ok) {
-      logger.error("Failed to execute produced block locally", {
+      logger.error("Failed to simulate produced block locally", {
         error: executionResult.error,
       });
       return;
@@ -135,20 +139,7 @@ export class BlockProducer {
     // 4. Validator signs the final hash (including stateRoot)
     this.wallet.signBlock(block);
 
-    // 5. Add to local blockchain
-    // Since we already applied it to state in step 2, we actually just need to save it.
-    // However, Blockchain.addBlock currently re-applies it.
-    // To avoid double execution/nonce increment, we must handle this in Blockchain or accept redundancy.
-    // For now, let's rollback the local state change if we want a clean addBlock call,
-    // OR we can make a 'commit' method.
-    // Simplified: Blockchain.addBlock will re-verify and re-apply.
-    // We must reset the stateManager before addBlock or use a temporary state.
-    // Given the current architecture, let's just use the final block and add it.
-
-    // Important: We need to rollback because applyBlock above mutated the state.
-    await this.stateManager.reset();
-    await this.blockchain.init(); // Reload current head
-
+    // 5. Add to local blockchain (this will perform the actual COMMIT)
     const result = await this.blockchain.addBlock(block);
     if (!result.ok) {
       logger.warn("Failed to add produced block", { error: result.error });

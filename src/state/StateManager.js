@@ -126,9 +126,10 @@ export class StateManager extends EventEmitter {
   /**
    * Apply all transactions in a block atomically
    * @param {import('../core/block.js').Block} block
-   * @returns {{ ok: boolean, error?: string }}
+   * @param {object} options - { commit: boolean }
+   * @returns {{ ok: boolean, error?: string, stateRoot?: string }}
    */
-  async applyBlock(block) {
+  async applyBlock(block, options = { commit: true }) {
     // Collect all state changes in memory first
     const changes = new Map(); // address -> account
 
@@ -217,13 +218,17 @@ export class StateManager extends EventEmitter {
     validatorAcc.mined = (validatorAcc.mined || 0n) + totalReward;
     changes.set(block.validator, validatorAcc);
 
-    logger.debug("Block tokenomics applied (LMR-1559)", {
-      index: block.index,
-      reward: blockReward.toString(),
-      priorityRewards: totalPriorityRewards.toString(),
-      burnedBaseFee: totalBaseFeeBurned.toString(),
-      gasUsed: blockGasUsed.toString(),
-    });
+    // Recalculate stateRoot based on changes + existing DB accounts
+    const allAccounts = await this.getAllAccounts();
+    // Merge changes into allAccounts
+    for (const [address, acc] of changes) {
+      allAccounts.set(address, acc);
+    }
+    const stateRoot = StateTree.calculateRoot(allAccounts);
+
+    if (!options.commit) {
+      return { ok: true, stateRoot };
+    }
 
     // Persist all changes in one batch
     const ops = [];
@@ -246,7 +251,6 @@ export class StateManager extends EventEmitter {
     }
 
     // Update Total Supply
-    // Supply = Old + Reward - totalBaseFeeBurned
     let currentSupply = await this.getTotalSupply();
     currentSupply = currentSupply + blockReward - totalBaseFeeBurned;
 
@@ -256,7 +260,7 @@ export class StateManager extends EventEmitter {
       value: currentSupply.toString(),
     });
 
-    // Save Receipts
+    // Save Receipts & Events
     for (const receipt of receipts) {
       ops.push({
         type: "put",
@@ -267,7 +271,6 @@ export class StateManager extends EventEmitter {
       });
     }
 
-    // Save Events
     for (const { txHash, contract, event, data } of events) {
       ops.push({
         type: "put",
@@ -285,10 +288,6 @@ export class StateManager extends EventEmitter {
     }
 
     await this.db.batch(ops);
-
-    // After batching, recalculate global stateRoot
-    const allAccounts = await this.getAllAccounts();
-    const stateRoot = StateTree.calculateRoot(allAccounts);
     await this.db.put("state:root", stateRoot);
 
     // Emit events for WebSocket subscribers

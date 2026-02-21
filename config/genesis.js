@@ -19,7 +19,7 @@ export const genesis = {
   // ── Chain Parameters ──────────────────────────────────────────────────────
   params: {
     blockTime: 5000, // 5 seconds per block
-    minStake: (1000n * LMR).toString(), // 10 LMR minimum to be validator
+    minStake: (900n * LMR).toString(), // 10 LMR minimum to be validator
 
     // Block reward schedule (decay every N blocks)
     initialBlockReward: (500n * LMR).toString(), // 10 LMR/block at start
