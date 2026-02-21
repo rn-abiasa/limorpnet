@@ -47,7 +47,7 @@ async function withdraw(wad) {
   storage.totalSupply -= amount;
 
   // Transfer native LMR back to sender
-  transfer(msg.sender, amount);
+  send(msg.sender, amount);
 
   emit("Withdrawal", { src: msg.sender, wad: amount });
   emit("Transfer", {
@@ -108,4 +108,16 @@ function allowance(owner, spender) {
 
 function totalSupply() {
   return storage.totalSupply;
+}
+
+function name() {
+  return storage.name;
+}
+
+function symbol() {
+  return storage.symbol;
+}
+
+function decimals() {
+  return storage.decimals;
 }

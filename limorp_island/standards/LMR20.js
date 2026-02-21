@@ -75,3 +75,15 @@ function allowance(owner, spender) {
 function totalSupply() {
   return storage.totalSupply;
 }
+
+function name() {
+  return storage.name;
+}
+
+function symbol() {
+  return storage.symbol;
+}
+
+function decimals() {
+  return storage.decimals;
+}

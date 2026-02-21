@@ -81,6 +81,12 @@ export class ContractVM {
         transfers.push({ to, amount: BigInt(amount) });
       },
 
+      // Alias for transfer to avoid shadowing in token contracts
+      send(to, amount) {
+        consumeGas(21000); // Cost of TRANSFER
+        transfers.push({ to, amount: BigInt(amount) });
+      },
+
       // Call another contract
       async call(address, method, args = [], value = 0n) {
         if (!ctx.call)

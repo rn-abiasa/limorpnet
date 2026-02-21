@@ -156,12 +156,12 @@ export class MessageHandler {
 
     try {
       const peers = Array.from(this.p2p.connections);
-      let currentHeight = this.blockchain.getHeight();
-      let targetHeight = currentHeight + 1;
 
       for (const socket of peers) {
-        if (currentHeight >= targetHeight && targetHeight > 0) break;
         if (socket.destroyed) continue;
+
+        let currentHeight = this.blockchain.getHeight();
+        let targetHeight = currentHeight + 1;
 
         try {
           while (currentHeight < targetHeight) {
@@ -180,11 +180,11 @@ export class MessageHandler {
                 }) + "\n",
               );
 
-              // Timeout for response
+              // Timeout for response - reduced for more responsive recovery
               setTimeout(() => {
                 socket.removeListener("sync_response", handler);
                 resolve(null);
-              }, 10000);
+              }, 5000);
             });
 
             const response = await responsePromise;

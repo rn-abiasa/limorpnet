@@ -112,7 +112,7 @@ export class RpcServer {
           );
         } catch (err) {
           logger.warn("RPC error", { error: err.message });
-          res.writeHead(400);
+          res.writeHead(200);
           res.end(
             JSON.stringify(
               {

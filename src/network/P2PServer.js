@@ -40,6 +40,13 @@ export class P2PServer {
       this.connections.add(socket);
       this.handler.handleSocket(socket);
 
+      // Trigger proactive sync when a new peer connects
+      this.handler.triggerSync().catch((err) => {
+        logger.error("Failed to trigger proactive sync", {
+          error: err.message,
+        });
+      });
+
       socket.on("error", (err) => {
         logger.debug(`Socket error from ${peerId}: ${err.message}`);
       });

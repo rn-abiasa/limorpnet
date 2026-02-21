@@ -33,7 +33,8 @@ export class StateManager extends EventEmitter {
   // ─── Account Access ────────────────────────────────────────────────────────
 
   async getAccount(address) {
-    const raw = await this.db.get(`state:account:${address}`).catch(() => null);
+    const addr = address.toLowerCase();
+    const raw = await this.db.get(`state:account:${addr}`).catch(() => null);
     if (!raw) return null;
     const acc = JSON.parse(raw);
     acc.balance = BigInt(acc.balance);
@@ -56,8 +57,9 @@ export class StateManager extends EventEmitter {
   }
 
   async saveAccount(address, account) {
+    const addr = address.toLowerCase();
     await this.db.put(
-      `state:account:${address}`,
+      `state:account:${addr}`,
       JSON.stringify(
         {
           balance: account.balance.toString(),
@@ -76,7 +78,8 @@ export class StateManager extends EventEmitter {
 
   async applyGenesis(initialState) {
     for (const [address, data] of Object.entries(initialState)) {
-      await this.saveAccount(address, {
+      const addr = address.toLowerCase();
+      await this.saveAccount(addr, {
         balance: BigInt(data.balance || "0"),
         nonce: 0,
         code: null,
@@ -384,22 +387,43 @@ export class StateManager extends EventEmitter {
         from.balance -= BigInt(txData.amount) + actualFee;
         changes.set(txData.from, from);
 
+        // Correctly credit the recipient contract with msg.value
+        const toAcc = await getAcc(txData.to);
+        toAcc.balance += BigInt(txData.amount);
+        changes.set(txData.to, toAcc);
+
         if (!vmResult.ok) return { ok: false, error: vmResult.error, gasUsed };
         return { ok: true, gasUsed };
       }
 
       case TX_TYPE.STAKE: {
-        from.stake += BigInt(txData.amount);
+        const amount = BigInt(txData.amount);
+        const actualFee = gasUsed * effectivePrice;
+        const totalCost = amount + actualFee;
+
+        if (from.balance < totalCost) {
+          return { ok: false, error: "Insufficient balance to stake" };
+        }
+
+        from.balance -= totalCost;
+        from.stake += amount;
         changes.set(txData.from, from);
         break;
       }
 
       case TX_TYPE.UNSTAKE: {
-        if (from.stake < BigInt(txData.amount)) {
+        const amount = BigInt(txData.amount);
+        const actualFee = gasUsed * effectivePrice;
+
+        if (from.stake < amount) {
           return { ok: false, error: "Insufficient stake" };
         }
-        from.stake -= BigInt(txData.amount);
-        from.balance += BigInt(txData.amount);
+        if (from.balance < actualFee) {
+          return { ok: false, error: "Insufficient balance for unstake fee" };
+        }
+
+        from.stake -= amount;
+        from.balance += amount - actualFee;
         changes.set(txData.from, from);
         break;
       }
@@ -482,9 +506,21 @@ export class StateManager extends EventEmitter {
     // Handle transfers
     if (vmResult.transfers) {
       for (const { to, amount } of vmResult.transfers) {
+        const val = BigInt(amount);
+        if (contract.balance < val) {
+          return {
+            ok: false,
+            error: "Insufficient contract balance for internal transfer",
+            gasUsed: vmResult.gasUsed,
+          };
+        }
+
         const acc = await getAcc(to);
-        acc.balance += BigInt(amount);
+        acc.balance += val;
+        contract.balance -= val;
+
         changes.set(to, acc);
+        changes.set(target, contract);
       }
     }
 

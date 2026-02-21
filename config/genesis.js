@@ -19,10 +19,10 @@ export const genesis = {
   // ── Chain Parameters ──────────────────────────────────────────────────────
   params: {
     blockTime: 5000, // 5 seconds per block
-    minStake: (100000n * LMR).toString(), // 10 LMR minimum to be validator
+    minStake: (1000n * LMR).toString(), // 10 LMR minimum to be validator
 
     // Block reward schedule (decay every N blocks)
-    initialBlockReward: (5000n * LMR).toString(), // 10 LMR/block at start
+    initialBlockReward: (500n * LMR).toString(), // 10 LMR/block at start
     rewardDecayBlocks: 1_051_200, // ~1 year (5s block = 6,307,200 blocks/year, halved)
     rewardDecayFactor: 0.8, // multiply by 0.8 every decay period (20% reduction)
     minBlockReward: ((1n * LMR) / 10n).toString(), // 0.1 LMR minimum reward (never 0)
@@ -44,8 +44,8 @@ export const genesis = {
     // Each validator needs enough to stake (min 10 LMR) + pay fees
     // Replace with your actual validator addresses
     "0xcf59cb9378ccfd9f1be5e9f602d1a18cd8491b24": {
-      balance: (2_000_000n * LMR).toString(), // 1,000,000 LMR
-      stake: (100000n * LMR).toString(), // 10 LMR pre-staked
+      balance: (1_000_000n * LMR).toString(), // 1,000,000 LMR
+      stake: (1000n * LMR).toString(), // 10 LMR pre-staked
     },
     // 'YOUR_VALIDATOR_2_ADDRESS': {
     //   balance: (1_000_000n * LMR).toString(),

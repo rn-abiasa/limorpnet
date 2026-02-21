@@ -116,6 +116,9 @@ export class Blockchain extends EventEmitter {
     if (!block.stateRoot) {
       block.stateRoot = result.stateRoot;
       block.hash = block._calculateHash();
+    } else if (result.stateRoot !== block.stateRoot) {
+      // Validated above already, but good for defense-in-depth
+      return { ok: false, error: "State root mismatch after application" };
     }
 
     await this._saveBlock(block);
@@ -181,11 +184,16 @@ export class Blockchain extends EventEmitter {
       first.index === latest.index + 1 &&
       first.previousHash === latest.hash
     ) {
-      for (const block of incomingBlocks) {
-        const result = await this.addBlock(block);
-        if (!result.ok) return false;
+      this.isSyncing = true;
+      try {
+        for (const block of incomingBlocks) {
+          const result = await this.addBlock(block);
+          if (!result.ok) return false;
+        }
+        return true;
+      } finally {
+        this.isSyncing = false;
       }
-      return true;
     }
 
     // 2. Check if this is a fork or a sync gap
